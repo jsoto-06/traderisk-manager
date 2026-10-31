@@ -78,6 +78,11 @@ export function AppShell({ children }: AppShellProps) {
       icon: <BarChart3 className="w-5 h-5" />,
     },
     {
+      label: t.nav.analytics,
+      href: `/${locale}/analytics`,
+      icon: <Sparkles className="w-5 h-5 text-[#00F0FF]" />,
+    },
+    {
       label: t.nav.journal,
       href: `/${locale}/journal`,
       icon: <BookOpen className="w-5 h-5" />,

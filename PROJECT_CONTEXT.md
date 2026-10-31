@@ -92,11 +92,16 @@ La aplicación está construida sobre una arquitectura modular desacoplada:
   * `src/__tests__/multiasset-engine.test.ts`: Pruebas y benchmarks matemáticos multi-activo para Cripto Spot, Cripto Perpetuo con funding cost drag, Forex con lotes estándar/mini/micro y conversión de divisa cotizada (USD/JPY y EUR/GBP), Futuros con multiplicadores (ES, MES, NQ) y contratos discretos enteros, y Acciones fraccionarias vs enteras (10 tests).
   * `src/__tests__/quant-audit.test.ts`: Auditoría cuantitativa avanzada de derivados y multi-activo (Fase 3.1): protección estricta del presupuesto de riesgo en futuros (0 contratos si riesgo insuficiente), presupuesto neto con comisiones y spread, pares Forex cruzados (GBP/JPY, EUR/GBP) con conversión multi-divisa (USD, EUR, GBP), prevención de doble contabilización de spread, convención de signos de financiación cripto (Long/Short, positivo/negativo) con intervalos 1h/8h, detección de liquidación previa a Stop Loss, y aritmética IEEE-754 / snap-to-step (18 tests).
   * `src/__tests__/robustness-invariants.test.ts`: Validación final de robustez cuantitativa y 10 invariantes matemáticas (Fase 3.2): modelado de liquidación en margen aislado vs cruzado, no inflación de posición con rebates futuros volátiles, conversiones completas directas/inversas en cuentas USD/EUR/GBP (GBP/JPY, EUR/GBP, EUR/USD, USD/JPY, GBP/USD), comprobación de solvencia frente a Margen Libre (`FreeMargin = Equity - UsedMargin`), alineación con tick grid (`isPriceOnGrid`), y verificación empírica de las 10 invariantes fundamentales (23 tests).
+  * `src/__tests__/expectancy.test.ts`: Pruebas de expectativa matemática, profit factor con protección de división por cero, win/loss/breakeven rate, cómputo de múltiplos R, advertencias de significancia de muestra y filtros relacionales (5 tests).
+  * `src/__tests__/drawdown.test.ts`: Pruebas de drawdown y consistencia: High-Water Mark, max drawdown monetario y porcentual, drawdown actual, factor de recuperación, trades bajo el agua (recovery duration) y rachas (3 tests).
+  * `src/__tests__/monte-carlo.test.ts`: Pruebas de generador pseudoaleatorio Mulberry32 determinista con semilla, remuestreo bootstrap con reemplazo, distribución teórica paramétrica, percentiles P5/P25/P50/P75/P95 e histograma de equidad final (5 tests).
+  * `src/__tests__/risk-of-ruin.test.ts`: Pruebas del modelo analítico cerrado de Ralph Vince / Perry Belmont, simulación empírica Monte Carlo, Criterio de Kelly (Full, Half, Quarter) y matriz comparativa de sensibilidad al riesgo (3 tests).
+  * `src/__tests__/prop-firm-simulator.test.ts`: Pruebas del simulador institucional Prop Firm: drawdown estático vs trailing sobre balance y equidad, trailing lock-in al capital inicial, límites de pérdida diaria y distribución de días de pase (3 tests).
 * **Comandos de Verificación**:
-  * `npm test`: 13 suites pasadas, 148 tests pasados, 6 tests de integración real omitidos de forma segura sin credenciales activas (154 tests totales).
+  * `npm test`: 18 suites unitarias pasadas, 167 tests pasados, 6 tests de integración real omitidos de forma segura sin credenciales activas (173 tests totales).
   * `npx tsc --noEmit`: 0 errores de compilación TypeScript.
   * `npm run lint`: 0 advertencias o errores.
-  * `npm run build`: Compilación de producción validada (25 rutas compiladas y prerenderizadas con Next.js 16.4.3 Turbopack).
+  * `npm run build`: Compilación de producción validada (37 rutas compiladas y prerenderizadas con Next.js 16.4.3 Turbopack).
 
 ---
 
@@ -512,9 +517,104 @@ En la Fase 4.2 se llevó a cabo una auditoría rigurosa orientada a producción 
 
 ---
 
-## 15. Próximos Pasos (Fase 5)
+## 15. Fase 5: Analítica Cuantitativa Avanzada, Monte Carlo y Simulador Prop Firm
 
-* Módulo de simulación Monte Carlo para proyección de curvas de capital, drawdown máximo esperado y probabilidad de ruina / insolvencia.
-* Exportación de informes avanzados de rendimiento en PDF y CSV para auditoría contable y cumplimiento tributario.
-* Integración con feeds de precios en tiempo real vía WebSocket (Binance, Yahoo Finance o Interactive Brokers API).
-* Aplicación de reglas avanzadas de gestión de riesgo dinámico (Kelly Criterion, Fixed Ratio de Ryan Jones).
+En la Fase 5 se implementó un motor analítico y estocástico institucional para modelar la ventaja estadística, la consistencia temporal, el riesgo de ruina y la probabilidad de superar o quebrar cuentas de fondeo bajo reglas profesionales.
+
+### 1. Módulo de Expectativa Matemática (`src/lib/analytics/expectancy.ts`)
+- **Expectativa Neta por Operación**:
+  $$\text{Expectativa (\$)} = \frac{\text{Net Profit}}{\text{Total Trades}} = (\text{WinRate} \times \text{AvgWin}) - (\text{LossRate} \times \text{AvgLoss})$$
+- **Expectativa en R-Múltiplos**:
+  $$\text{Expectativa (R)} = (\text{WinRate} \times \text{AvgWin}_R) - (\text{LossRate} \times \text{AvgLoss}_R)$$
+  Calculada identificando la unidad de riesgo $1R = |\text{EntryPrice} - \text{StopLoss}| \times \text{Size}$ de cada operación cerrada.
+- **Tratamiento Diferenciado de Breakeven**:
+  Las operaciones con resultado neto $|P\&L| \le 0.01$ no se computan erróneamente como pérdidas ni inflan artificialmente la tasa de acierto, computándose de forma separada: $\text{Total} = \text{Wins} + \text{Losses} + \text{Breakevens}$.
+- **Profit Factor Robusto**:
+  $$\text{Profit Factor} = \frac{\text{Gross Profit}}{|\text{Gross Loss}|}$$
+  Protegido con división segura: devuelve `Infinity` si $\text{Gross Loss} = 0$ y $\text{Gross Profit} > 0$, o `0` si ambos son cero.
+- **Evaluación de Muestra Estadística**:
+  - $N < 10$: Muestra insuficiente con advertencia de significancia estadística.
+  - $10 \le N < 30$: Muestra moderada con advertencia de margen de error.
+  - $N \ge 30$: Muestra estadísticamente suficiente para inferencia.
+
+### 2. Módulo de Drawdown y Consistencia (`src/lib/analytics/drawdown.ts`)
+- **Seguimiento del High-Water Mark (HWM)**:
+  Cresta máxima histórica del balance tras cada operación cronológica.
+- **Max Drawdown y Drawdown Actual**:
+  $$\text{Drawdown (\%)} = \frac{\text{Peak} - \text{Balance}}{\text{Peak}} \times 100$$
+- **Factor de Recuperación**:
+  $$\text{Recovery Factor} = \frac{\text{Net Profit}}{\text{Max Drawdown Amount}}$$
+- **Duración de Drawdown (Recovery Trades)**:
+  Número máximo de operaciones consecutivas que la cuenta estuvo bajo el agua antes de registrar un nuevo máximo histórico.
+- **Rachas Ganadoras y Perdedoras**:
+  Seguimiento estricto de secuencias consecutivas de victorias y derrotas.
+
+### 3. Motor Monte Carlo Bootstrap Determinista (`src/lib/analytics/monte-carlo.ts`)
+- **Generador Pseudoaleatorio Mulberry32**:
+  Algoritmo PRNG de 32 bits determinista con soporte de semilla (`seed`), garantizando reproducibilidad exacta de simulaciones para testing y auditoría.
+- **Remuestreo Bootstrap con Reemplazo**:
+  Muestreo empírico de operaciones históricas reales expresadas en múltiplos de R o resultados netos.
+- **Modo Paramétrico / Distribución Teórica**:
+  Simulación basada en parámetros $(\text{Win Rate}, \text{Average Win}, \text{Average Loss})$ para estrategias nuevas o con historial reducido.
+- **Modelos de Riesgo**:
+  - `fixed_amount`: Riesgo monetario fijo constante por operación.
+  - `percentage_equity`: Riesgo compuesto variable como porcentaje del capital flotante en cada paso.
+- **Haz de Curvas Percentilares**:
+  Cálculo de percentiles $P_5$ (pesimista), $P_{25}$, $P_{50}$ (mediana), $P_{75}$ y $P_{95}$ (optimista) en cada operación del horizonte.
+- **Distribución de Frecuencia de Equidad Final**:
+  Agrupación de resultados en histogramas de 10 bins con recuento y porcentaje.
+- **Métricas Institucionales**:
+  Probabilidad de ganancia, probabilidad de alcanzar el objetivo, probabilidad de ruina ($<10\%$ del capital) y probabilidad de vulnerar el límite de drawdown.
+
+### 4. Módulo de Riesgo de Ruina y Criterio de Kelly (`src/lib/analytics/risk-of-ruin.ts`)
+- **Fórmula Analítica Cerrada de Ralph Vince / Perry Belmont**:
+  $$\text{Ventaja (A)} = \frac{W \cdot R - L}{W \cdot R + L}$$
+  $$\text{Unidades de Riesgo (U)} = \frac{\text{Max Loss Limit (\%)}}{\text{Risk Per Trade (\%)}}$$
+  $$\text{Riesgo de Ruina (Analítico)} = \left(\frac{1 - A}{1 + A}\right)^U$$
+  Si $A \le 0$, el riesgo de ruina es $100\%$.
+- **Simulación Empírica Monte Carlo**:
+  Validación independiente mediante 1,000 caminos aleatorios a lo largo de 200 operaciones.
+- **Dimensionamiento Óptimo de Kelly Criterion**:
+  $$K = W - \frac{1 - W}{R}$$
+  - Full Kelly: tasa teórica de máximo crecimiento asintótico.
+  - Half Kelly: reducción del 50% de volatilidad para el 75% del retorno compuesto.
+  - Quarter Kelly: estándar recomendado para fondos institucionales y cuentas fondeadas.
+- **Probabilidad de Recuperación de Drawdown del 50%**:
+  Probabilidad de duplicar el capital ($+100\%$) antes de perder el resto mediante formulación de Gambler's Ruin.
+- **Matriz de Sensibilidad al Riesgo**:
+  Comparativa de 6 niveles de riesgo ($0.25\%, 0.5\%, 1.0\%, 1.5\%, 2.0\%, 3.0\%$) categorizados como conservador, equilibrado, agresivo o extremo, con recomendaciones automáticas.
+
+### 5. Simulador Institucional de Prop Firm (`src/lib/prop-firm-simulator/index.ts`)
+- **Modelado Multi-Regla de Drawdown**:
+  1. `static`: Suelo fijo invariable en $\text{Capital} \times (1 - \text{MaxDD}\%)$.
+  2. `trailing_balance`: El suelo asciende con cada nuevo pico del balance al cierre de operaciones.
+  3. `trailing_equity`: El suelo sigue la cresta de equidad continua.
+  4. `trailing_hwm_lock`: El suelo sube con la cresta hasta congelarse permanentemente en el capital inicial una vez que el beneficio acumulado cubre el drawdown (mecanismo estándar de Apex Trader Funding y Topstep).
+- **Control de Pérdida Diaria**:
+  - `balance_based`: Evaluado respecto al balance de apertura del día.
+  - `equity_based`: Evaluado respecto al pico intradía o equidad flotante.
+- **Simulación Monte Carlo Multi-Día**:
+  Simula $M$ días de trading con $K$ operaciones por día, comisiones por orden, y control en tiempo real de infracciones de pérdida diaria vs. drawdown total.
+- **Métricas de Rendimiento**:
+  - Probabilidad de aprobación del challenge.
+  - Probabilidad de suspensión total.
+  - Tasa de breach por pérdida diaria vs. breach por drawdown máximo vs. ambos.
+  - Días medios y medianos requeridos para superar la evaluación.
+  - Trayectorias de equidad de muestra (aprobadas, fallidas y mediana) para visualización en Recharts.
+
+### 6. Interfaz y Experiencia de Usuario
+- **`/[locale]/analytics`**: Panel principal con selector de cuenta y filtros de activo/dirección/estrategia, alertas de significancia estadística, StatCards de expectativa y drawdown, gráfico de balance vs. High-Water Mark y gráfico sumergido de drawdown (underwater).
+- **`/[locale]/analytics/monte-carlo`**: Simulador interactivo con selección de datos históricos o teóricos, controles de riesgo y gráficos de percentiles e histograma.
+- **`/[locale]/analytics/risk-of-ruin`**: Calculadora analítica y empírica de ruina, Kelly Criterion y tabla de sensibilidad de riesgo.
+- **`/[locale]/analytics/prop-firm`**: Simulador de challenge con reglas institucionales de trailing y daily loss, desglose de causas de fallo y curvas de trayectorias.
+- **Dashboard (`/[locale]`)**: Widget resumen ejecutivo de expectativa matemática, profit factor, drawdown y racha máxima con enlace directo a analítica.
+- **AppShell**: Elemento de navegación "Analítica Cuantitativa" con icono distintivo `Sparkles`.
+- **Internacionalización**: Diccionarios bilingües completos en español e inglés (`es` y `en`).
+
+---
+
+## 16. Próximos Pasos (Fase 6)
+
+* Exportación de informes cuantitativos en formato PDF y hojas de cálculo CSV para auditorías de riesgo y prop firms.
+* Conexión con proveedores de datos de mercado en tiempo real (Binance API, Interactive Brokers Web API).
+* Registro automático de diario mediante webhooks de trading o importación de archivos de extracto (MT4/MT5, NinjaTrader, cTrader).

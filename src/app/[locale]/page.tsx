@@ -13,10 +13,13 @@ import {
   PlusCircle,
   Calculator,
   CheckCircle2,
+  Sparkles,
 } from 'lucide-react';
 import { useLocale } from '@/lib/i18n/useLocale';
 import { useStorage } from '@/hooks/useStorage';
 import { calculateStatistics } from '@/lib/statistics';
+import { calculateExpectancy } from '@/lib/analytics/expectancy';
+import { calculateDrawdownMetrics } from '@/lib/analytics/drawdown';
 import { formatCurrency, formatDate } from '@/lib/i18n';
 import { Card } from '@/components/ui/Card';
 import { StatCard } from '@/components/ui/StatCard';
@@ -41,6 +44,16 @@ export default function DashboardPage() {
   const stats = useMemo(() => {
     if (!activeAccount) return null;
     return calculateStatistics(activeAccountTrades, activeAccount.initialCapital);
+  }, [activeAccount, activeAccountTrades]);
+
+  // Quantitative Expectancy & Drawdown (Fase 5)
+  const expectancy = useMemo(() => {
+    return calculateExpectancy(activeAccountTrades);
+  }, [activeAccountTrades]);
+
+  const drawdownMetrics = useMemo(() => {
+    if (!activeAccount) return null;
+    return calculateDrawdownMetrics(activeAccountTrades, activeAccount.initialCapital);
   }, [activeAccount, activeAccountTrades]);
 
   // Derived metrics
@@ -275,6 +288,79 @@ export default function DashboardPage() {
           </div>
         </Card>
       </div>
+
+      {/* Quantitative Analytics Widget (Fase 5) */}
+      <Card className="p-5 bg-[#111C35] border border-[#1E2D4A] hover:border-[#00F0FF]/30 transition-all">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-lg bg-[#00F0FF]/15 flex items-center justify-center text-[#00F0FF]">
+              <Sparkles className="w-4 h-4" />
+            </div>
+            <div>
+              <h2 className="text-sm font-semibold text-[#F5F7FA]">
+                {t.analytics.title}
+              </h2>
+              <p className="text-xs text-[#8899A6]">
+                Expectativa matemática, drawdown institucional y simulador Monte Carlo
+              </p>
+            </div>
+          </div>
+          <Link href={`/${locale}/analytics`}>
+            <Button variant="ghost" size="sm" className="text-xs text-[#00F0FF] hover:bg-[#00F0FF]/10">
+              Ver Analítica Completa <ArrowRight className="w-3.5 h-3.5 ml-1" />
+            </Button>
+          </Link>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+          <div className="p-3 rounded-lg bg-[#0A1128] border border-[#1E2D4A]">
+            <span className="text-[#8899A6] block">{t.analytics.expectancy}</span>
+            <span
+              className={`text-base font-bold mt-0.5 block ${
+                expectancy.expectancy >= 0 ? 'text-[#10B981]' : 'text-[#EF4444]'
+              }`}
+            >
+              {formatCurrency(expectancy.expectancy, activeAccount.currency, locale)}
+            </span>
+            <span className="text-[10px] text-[#8899A6] block">
+              {expectancy.expectancyR >= 0 ? '+' : ''}
+              {expectancy.expectancyR} R / trade
+            </span>
+          </div>
+
+          <div className="p-3 rounded-lg bg-[#0A1128] border border-[#1E2D4A]">
+            <span className="text-[#8899A6] block">{t.analytics.profitFactor}</span>
+            <span className="text-base font-bold text-[#F5F7FA] mt-0.5 block">
+              {expectancy.profitFactor === Infinity ? '∞' : expectancy.profitFactor.toFixed(2)}
+            </span>
+            <span className="text-[10px] text-[#8899A6] block">Win Rate: {expectancy.winRate}%</span>
+          </div>
+
+          <div className="p-3 rounded-lg bg-[#0A1128] border border-[#1E2D4A]">
+            <span className="text-[#8899A6] block">{t.analytics.maxDrawdown}</span>
+            <span className="text-base font-bold text-[#EF4444] mt-0.5 block">
+              {drawdownMetrics ? `${drawdownMetrics.maxDrawdownPercent}%` : '0%'}
+            </span>
+            <span className="text-[10px] text-[#8899A6] block">
+              {drawdownMetrics
+                ? formatCurrency(drawdownMetrics.maxDrawdownAmount, activeAccount.currency, locale)
+                : '$0'}
+            </span>
+          </div>
+
+          <div className="p-3 rounded-lg bg-[#0A1128] border border-[#1E2D4A]">
+            <span className="text-[#8899A6] block">{t.analytics.recoveryFactor}</span>
+            <span className="text-base font-bold text-[#00F0FF] mt-0.5 block">
+              {drawdownMetrics && drawdownMetrics.recoveryFactor === Infinity
+                ? '∞'
+                : (drawdownMetrics?.recoveryFactor?.toFixed(2) ?? '0')}
+            </span>
+            <span className="text-[10px] text-[#8899A6] block">
+              Max Racha: {drawdownMetrics?.maxWinStreak ?? 0} wins
+            </span>
+          </div>
+        </div>
+      </Card>
 
       {/* Balance Evolution Chart & Recent Trades */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
