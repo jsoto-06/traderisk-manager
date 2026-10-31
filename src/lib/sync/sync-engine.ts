@@ -53,6 +53,51 @@ export interface MigrationPreview {
 }
 
 // -----------------------------------------------------------------------------
+// Canonical JSON & Deterministic Normalization
+// -----------------------------------------------------------------------------
+
+/**
+ * Recursively serializes any value into a canonical JSON string:
+ * - Object keys are sorted alphabetically at all recursive depths.
+ * - Undefined values in objects are omitted.
+ * - Primitive values, arrays, and null are serialized deterministically.
+ * This guarantees that two functionally identical objects produce the exact same
+ * string hash, independent of insertion order or browser runtime differences.
+ */
+export function canonicalJsonStringify(obj: unknown): string {
+  if (obj === null || obj === undefined) {
+    return 'null';
+  }
+  if (typeof obj !== 'object') {
+    return JSON.stringify(obj);
+  }
+  if (Array.isArray(obj)) {
+    return `[${obj.map((item) => canonicalJsonStringify(item)).join(',')}]`;
+  }
+  const keys = Object.keys(obj as Record<string, unknown>).sort();
+  const pairs: string[] = [];
+  for (const k of keys) {
+    const v = (obj as Record<string, unknown>)[k];
+    if (v !== undefined) {
+      pairs.push(`${JSON.stringify(k)}:${canonicalJsonStringify(v)}`);
+    }
+  }
+  return `{${pairs.join(',')}}`;
+}
+
+function toCanonicalIso(dateVal?: string | null): string | null {
+  if (!dateVal) return null;
+  const d = new Date(dateVal);
+  return isNaN(d.getTime()) ? String(dateVal).trim() : d.toISOString();
+}
+
+function roundFloat(val: unknown, decimals: number): number {
+  const num = Number(val);
+  if (isNaN(num)) return 0;
+  return Number(num.toFixed(decimals));
+}
+
+// -----------------------------------------------------------------------------
 // Conflict Resolution (LWW & Optimistic Versioning)
 // -----------------------------------------------------------------------------
 
@@ -60,9 +105,10 @@ export type ConflictDecision = 'local_wins' | 'remote_wins' | 'identical_noop';
 
 /**
  * Deterministic Last-Write-Wins and Optimistic Version tie-breaker.
- * 1. Highest updated_at timestamp wins.
- * 2. If timestamps are identical, highest version wins.
- * 3. If versions are identical, compares serialized content to prevent divergence.
+ * 1. If functional canonical representations are identical => identical_noop (no action needed).
+ * 2. Highest updated_at timestamp in UTC wins.
+ * 3. If timestamps are identical, highest version wins.
+ * 4. If versions are identical, compares canonical sorted JSON to guarantee convergence.
  */
 export function resolveConflictLWW(
   localUpdatedAt: string,
@@ -87,7 +133,7 @@ export function resolveConflictLWW(
 
   if (localDataHash && remoteDataHash) {
     if (localDataHash === remoteDataHash) return 'identical_noop';
-    // Alphabetical tie-breaker ensures all distributed nodes converge identically
+    // Alphabetical tie-breaker on canonical sorted JSON ensures 100% deterministic convergence
     return localDataHash > remoteDataHash ? 'local_wins' : 'remote_wins';
   }
 
@@ -242,61 +288,61 @@ function mapJournalFromDb(row: Database['public']['Tables']['journal_entries']['
   };
 }
 
-function normalizeAccount(a: Account) {
+export function normalizeAccount(a: Account) {
   return {
-    id: a.id,
-    name: a.name,
+    id: String(a.id).trim(),
+    name: String(a.name).trim(),
     type: a.type,
-    initialCapital: Number(a.initialCapital),
-    balance: Number(a.balance),
-    equity: Number(a.equity),
-    currency: a.currency,
-    profitTarget: Number(a.profitTarget),
-    dailyLossLimit: Number(a.dailyLossLimit),
-    maxDrawdown: Number(a.maxDrawdown),
+    initialCapital: roundFloat(a.initialCapital, 2),
+    balance: roundFloat(a.balance, 2),
+    equity: roundFloat(a.equity, 2),
+    currency: String(a.currency || 'USD').trim().toUpperCase(),
+    profitTarget: roundFloat(a.profitTarget, 2),
+    dailyLossLimit: roundFloat(a.dailyLossLimit, 2),
+    maxDrawdown: roundFloat(a.maxDrawdown, 2),
     drawdownType: a.drawdownType,
-    timezone: a.timezone,
-    dailyResetHour: a.dailyResetHour,
-    riskPerTrade: Number(a.riskPerTrade),
-    leverage: Number(a.leverage),
-    deletedAt: a.deletedAt || null,
+    timezone: String(a.timezone || 'UTC').trim(),
+    dailyResetHour: Math.floor(Number(a.dailyResetHour || 0)),
+    riskPerTrade: roundFloat(a.riskPerTrade, 2),
+    leverage: roundFloat(a.leverage, 2),
+    deletedAt: toCanonicalIso(a.deletedAt),
   };
 }
 
-function normalizeTrade(t: Trade) {
+export function normalizeTrade(t: Trade) {
   return {
-    id: t.id,
-    accountId: t.accountId,
-    asset: t.asset,
+    id: String(t.id).trim(),
+    accountId: String(t.accountId).trim(),
+    asset: String(t.asset).trim().toUpperCase(),
     direction: t.direction,
-    entryPrice: Number(t.entryPrice),
-    exitPrice: t.exitPrice != null ? Number(t.exitPrice) : null,
-    stopLoss: Number(t.stopLoss),
-    takeProfit: Number(t.takeProfit),
-    size: Number(t.size),
-    openDate: t.openDate,
-    closeDate: t.closeDate || null,
+    entryPrice: roundFloat(t.entryPrice, 8),
+    exitPrice: t.exitPrice != null ? roundFloat(t.exitPrice, 8) : null,
+    stopLoss: roundFloat(t.stopLoss, 8),
+    takeProfit: roundFloat(t.takeProfit, 8),
+    size: roundFloat(t.size, 8),
+    openDate: toCanonicalIso(t.openDate),
+    closeDate: toCanonicalIso(t.closeDate),
     status: t.status,
-    result: t.result != null ? Number(t.result) : null,
-    commissions: Number(t.commissions || 0),
-    notes: t.notes || '',
-    deletedAt: t.deletedAt || null,
+    result: t.result != null ? roundFloat(t.result, 4) : null,
+    commissions: roundFloat(t.commissions || 0, 4),
+    notes: t.notes ? String(t.notes).trim() : '',
+    deletedAt: toCanonicalIso(t.deletedAt),
   };
 }
 
-function normalizeJournal(j: JournalEntry) {
+export function normalizeJournal(j: JournalEntry) {
   return {
-    id: j.id,
-    accountId: j.accountId,
-    date: j.date,
+    id: String(j.id).trim(),
+    accountId: String(j.accountId).trim(),
+    date: toCanonicalIso(j.date),
     emotionalState: j.emotionalState,
-    entryReason: j.entryReason,
+    entryReason: String(j.entryReason).trim(),
     planCompliance: Boolean(j.planCompliance),
-    errors: j.errors || '',
+    errors: j.errors ? String(j.errors).trim() : '',
     overtrading: Boolean(j.overtrading),
-    observations: j.observations || '',
-    discipline: Number(j.discipline),
-    deletedAt: j.deletedAt || null,
+    observations: j.observations ? String(j.observations).trim() : '',
+    discipline: Math.max(1, Math.min(5, Math.floor(Number(j.discipline || 3)))),
+    deletedAt: toCanonicalIso(j.deletedAt),
   };
 }
 
@@ -424,8 +470,8 @@ export async function performSync(
           remote.updatedAt,
           local.version,
           remote.version,
-          JSON.stringify(normalizeAccount(local)),
-          JSON.stringify(normalizeAccount(remote)),
+          canonicalJsonStringify(normalizeAccount(local)),
+          canonicalJsonStringify(normalizeAccount(remote)),
         );
 
         if (decision === 'local_wins') {
@@ -551,8 +597,8 @@ export async function performSync(
           remote.updatedAt || remote.openDate,
           local.version,
           remote.version,
-          JSON.stringify(normalizeTrade(local)),
-          JSON.stringify(normalizeTrade(remote)),
+          canonicalJsonStringify(normalizeTrade(local)),
+          canonicalJsonStringify(normalizeTrade(remote)),
         );
 
         if (decision === 'local_wins') {
@@ -675,8 +721,8 @@ export async function performSync(
           remote.updatedAt || remote.date,
           local.version,
           remote.version,
-          JSON.stringify(normalizeJournal(local)),
-          JSON.stringify(normalizeJournal(remote)),
+          canonicalJsonStringify(normalizeJournal(local)),
+          canonicalJsonStringify(normalizeJournal(remote)),
         );
 
         if (decision === 'local_wins') {

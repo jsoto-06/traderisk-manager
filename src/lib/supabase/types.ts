@@ -21,6 +21,7 @@ export interface Database {
           avatar_url: string | null;
           created_at: string;
           updated_at: string;
+          version: number;
         };
         Insert: {
           id: string;
@@ -29,6 +30,7 @@ export interface Database {
           avatar_url?: string | null;
           created_at?: string;
           updated_at?: string;
+          version?: number;
         };
         Update: {
           id?: string;
@@ -37,6 +39,7 @@ export interface Database {
           avatar_url?: string | null;
           created_at?: string;
           updated_at?: string;
+          version?: number;
         };
       };
       accounts: {
@@ -244,6 +247,7 @@ export interface Database {
           theme: string;
           default_account_id: string | null;
           updated_at: string;
+          version: number;
         };
         Insert: {
           user_id: string;
@@ -251,6 +255,7 @@ export interface Database {
           theme?: string;
           default_account_id?: string | null;
           updated_at?: string;
+          version?: number;
         };
         Update: {
           user_id?: string;
@@ -258,6 +263,7 @@ export interface Database {
           theme?: string;
           default_account_id?: string | null;
           updated_at?: string;
+          version?: number;
         };
       };
     };

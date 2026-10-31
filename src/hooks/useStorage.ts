@@ -160,6 +160,7 @@ export function useStorage() {
         id: `acc-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
         createdAt: now,
         updatedAt: now,
+        version: 1,
       };
       const updated = [...accounts, newAccount];
       saveAccounts(updated);
@@ -172,9 +173,14 @@ export function useStorage() {
 
   const updateAccount = useCallback(
     (updatedAccount: Account) => {
+      const now = new Date().toISOString();
       const updated = accounts.map((a) =>
         a.id === updatedAccount.id
-          ? { ...updatedAccount, updatedAt: new Date().toISOString() }
+          ? {
+              ...updatedAccount,
+              updatedAt: now,
+              version: (updatedAccount.version || a.version || 1) + 1,
+            }
           : a,
       );
       saveAccounts(updated);
@@ -238,9 +244,13 @@ export function useStorage() {
   // Trade actions with audited double-entry balance accounting
   const addTrade = useCallback(
     (tradeData: Omit<Trade, 'id'>) => {
+      const now = new Date().toISOString();
       const newTrade: Trade = {
         ...tradeData,
         id: `trade-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        createdAt: tradeData.createdAt || now,
+        updatedAt: now,
+        version: 1,
       };
       const updatedTrades = [newTrade, ...trades];
       saveTrades(updatedTrades);
@@ -268,8 +278,17 @@ export function useStorage() {
 
   const updateTrade = useCallback(
     (updatedTrade: Trade) => {
+      const now = new Date().toISOString();
       const oldTrade = trades.find((t) => t.id === updatedTrade.id);
-      const updatedTrades = trades.map((t) => (t.id === updatedTrade.id ? updatedTrade : t));
+      const updatedTrades = trades.map((t) =>
+        t.id === updatedTrade.id
+          ? {
+              ...updatedTrade,
+              updatedAt: now,
+              version: (updatedTrade.version || t.version || 1) + 1,
+            }
+          : t,
+      );
       saveTrades(updatedTrades);
 
       if (oldTrade) {
@@ -374,9 +393,13 @@ export function useStorage() {
   // Journal actions
   const addJournalEntry = useCallback(
     (entryData: Omit<JournalEntry, 'id'>) => {
+      const now = new Date().toISOString();
       const newEntry: JournalEntry = {
         ...entryData,
         id: `journal-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        createdAt: entryData.createdAt || now,
+        updatedAt: now,
+        version: 1,
       };
       const updated = [newEntry, ...journal];
       saveJournal(updated);
@@ -388,7 +411,16 @@ export function useStorage() {
 
   const updateJournalEntry = useCallback(
     (updatedEntry: JournalEntry) => {
-      const updated = journal.map((j) => (j.id === updatedEntry.id ? updatedEntry : j));
+      const now = new Date().toISOString();
+      const updated = journal.map((j) =>
+        j.id === updatedEntry.id
+          ? {
+              ...updatedEntry,
+              updatedAt: now,
+              version: (updatedEntry.version || j.version || 1) + 1,
+            }
+          : j,
+      );
       saveJournal(updated);
       notifyStorageUpdate();
     },

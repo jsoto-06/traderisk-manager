@@ -199,6 +199,38 @@ export function clearTombstones(namespace: string = activeNamespace): void {
   storage.remove(key);
 }
 
+/**
+ * Safely prunes tombstones that are older than maxAgeDays (default: 90 days).
+ * Prevents unbounded growth in client LocalStorage while ensuring that offline
+ * devices reconnecting within 3 months safely receive all deletions.
+ */
+export function pruneExpiredTombstones(
+  maxAgeDays: number = 90,
+  namespace: string = activeNamespace,
+): number {
+  const tombstones = getTombstones(namespace);
+  const cutoffTime = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
+
+  const retained: Tombstone[] = [];
+  let prunedCount = 0;
+
+  for (const t of tombstones) {
+    const tTime = new Date(t.deletedAt || t.updatedAt).getTime();
+    if (tTime >= cutoffTime) {
+      retained.push(t);
+    } else {
+      prunedCount++;
+    }
+  }
+
+  if (prunedCount > 0) {
+    const key = getStorageKey(STORAGE_KEYS.TOMBSTONES, namespace);
+    storage.set(key, retained);
+  }
+
+  return prunedCount;
+}
+
 // ---------------------------------------------------------------------------
 // Account CRUD with Non-Destructive Quarantine & Namespace Support
 // ---------------------------------------------------------------------------

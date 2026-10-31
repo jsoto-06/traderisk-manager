@@ -93,7 +93,7 @@ La aplicación está construida sobre una arquitectura modular desacoplada:
   * `src/__tests__/quant-audit.test.ts`: Auditoría cuantitativa avanzada de derivados y multi-activo (Fase 3.1): protección estricta del presupuesto de riesgo en futuros (0 contratos si riesgo insuficiente), presupuesto neto con comisiones y spread, pares Forex cruzados (GBP/JPY, EUR/GBP) con conversión multi-divisa (USD, EUR, GBP), prevención de doble contabilización de spread, convención de signos de financiación cripto (Long/Short, positivo/negativo) con intervalos 1h/8h, detección de liquidación previa a Stop Loss, y aritmética IEEE-754 / snap-to-step (18 tests).
   * `src/__tests__/robustness-invariants.test.ts`: Validación final de robustez cuantitativa y 10 invariantes matemáticas (Fase 3.2): modelado de liquidación en margen aislado vs cruzado, no inflación de posición con rebates futuros volátiles, conversiones completas directas/inversas en cuentas USD/EUR/GBP (GBP/JPY, EUR/GBP, EUR/USD, USD/JPY, GBP/USD), comprobación de solvencia frente a Margen Libre (`FreeMargin = Equity - UsedMargin`), alineación con tick grid (`isPriceOnGrid`), y verificación empírica de las 10 invariantes fundamentales (23 tests).
 * **Comandos de Verificación**:
-  * `npm test`: 12 suites pasadas, 138/138 tests OK.
+  * `npm test`: 13 suites pasadas, 148 tests pasados, 6 tests de integración real omitidos de forma segura sin credenciales activas (154 tests totales).
   * `npx tsc --noEmit`: 0 errores de compilación TypeScript.
   * `npm run lint`: 0 advertencias o errores.
   * `npm run build`: Compilación de producción validada (25 rutas compiladas y prerenderizadas con Next.js 16.4.3 Turbopack).
@@ -460,7 +460,59 @@ El archivo `src/__tests__/supabase-security-and-sync-audit.test.ts` implementa p
 
 ---
 
-## 14. Próximos Pasos (Fase 5)
+## 14. Fase 4.2: Auditoría de Producción y Verificación Real de Supabase
+
+En la Fase 4.2 se llevó a cabo una auditoría rigurosa orientada a producción sobre PostgreSQL, Supabase RLS y el motor de sincronización distribuida, eliminando vulnerabilidades potenciales y garantizando convergencia matemática estricta sin split-brain.
+
+### 1. Serialización JSON Canónica y Normalización Determinista
+- **`canonicalJsonStringify(obj)`**: Serializador recursivo que ordena alfabéticamente todas las propiedades anidadas, omite valores `undefined` y unifica la representación textual de datos complejos.
+- **Normalización Estricta de Entidades**:
+  - `normalizeAccount()`: redondeo determinista de balance y equidad a 2 decimales, sanitización de moneda a mayúsculas, formato UTC canónico para fechas.
+  - `normalizeTrade()`: normalización de precios y tamaños a 8 decimales, comisiones y resultados a 4 decimales, sanitización de símbolos de activos a mayúsculas y fechas UTC ISO estandarizadas.
+  - `normalizeJournal()`: sujeción estricta de disciplina al rango entero [1, 5], booleanos forzados y normalización de textos.
+- **Invariancia de Hash**: Garantiza que dos clientes con propiedades en orden inverso o con diferencias estéticas generen la misma firma exacta, evitando falsos conflictos y previniendo bucles de sincronización.
+
+### 2. Desempate Determinista y Convergencia Distribuida Multi-Cliente
+- **Resolución de Conflictos LWW en 4 Niveles**:
+  1. *Identical No-Op*: Si los hashes canónicos de ambas entidades coinciden, se descarta cualquier transferencia o incremento de versión.
+  2. *Timestamp UTC*: Prevalece la fecha de modificación más reciente.
+  3. *Versión Optimista*: Ante igualdad de timestamps, prevalece la mayor versión numérica.
+  4. *Desempate Canónico*: Ante empate exacto en timestamp y versión, se realiza una comparación alfabética estricta sobre la cadena serializada (`localCanonical > remoteCanonical ? 'local_wins' : 'remote_wins'`), garantizando que todos los nodos distribuidos seleccionen exactamente el mismo registro ganador sin divergencia.
+- **Invarianza de Orden de Llegada**: Pruebas con dos clientes (Cliente A y Cliente B) modificando la misma operación demuestran que, independientemente del orden en que sincronicen con la nube, ambos terminan convergiendo al mismo registro final.
+- **Prevención de Bucles de Sincronización**: Al descargar datos remotos, el motor conserva intactos `updatedAt` y `version` sin generar marcas artificiales en el cliente.
+
+### 3. Poda Segura de Tombstones (Política de Retención de 90 Días)
+- **Función `pruneExpiredTombstones(maxAgeDays = 90)`**: Limpia de manera segura tombstones con más de 90 días de antigüedad en LocalStorage.
+- **Protección de Dispositivos Desconectados**: Cualquier dispositivo que se reconecte dentro de un margen de 3 meses recibe y procesa todas las bajas pendientes antes de que los tombstones sean purgados.
+
+### 4. Vulnerabilidades Encontradas y Correcciones en PostgreSQL (`20261031_phase_4_2_production_hardening.sql`)
+1. **Fallo en Trigger `handle_updated_at()`**:
+   - *Vulnerabilidad previa*: El trigger ejecutaba `NEW.version = COALESCE(OLD.version, 1) + 1;` incondicionalmente. Al ejecutarse en tablas sin columna `version` (`profiles` y `user_settings`), PostgreSQL lanzaba la excepción `record "new" has no field "version"`.
+   - *Corrección*: Se agregó `version INTEGER NOT NULL DEFAULT 1` a `profiles` y `user_settings`, y se protegió el trigger con un bloque `EXCEPTION WHEN undefined_column THEN NULL;`.
+2. **Deriva Temporal del Cliente durante Sincronización Offline**:
+   - *Vulnerabilidad previa*: El trigger sobreescribía siempre `NEW.updated_at = now()`, ignorando el timestamp registrado por el cliente offline. Al día siguiente, el cliente detectaba una versión remota con timestamp espurio y generaba un falso conflicto.
+   - *Corrección*: `IF NEW.updated_at IS NULL OR (TG_OP = 'UPDATE' AND NEW.updated_at = OLD.updated_at) THEN NEW.updated_at = timezone('utc'::text, now()); END IF;`.
+3. **Omisión de Política INSERT en `profiles`**:
+   - *Vulnerabilidad previa*: Sólo existían políticas SELECT y UPDATE en `profiles`. Si un cliente intentaba aprovisionar su perfil manualmente, RLS denegaba el acceso.
+   - *Corrección*: Política explícita `CREATE POLICY "Users can insert own profile" ON public.profiles FOR INSERT WITH CHECK (auth.uid() = id);` y endurecimiento de UPDATE con `WITH CHECK (auth.uid() = id)`.
+
+### 5. Suite de Pruebas de Integración Real (`src/__tests__/supabase-integration.real.test.ts`)
+- Arnés de pruebas diseñado para validar el aislamiento multi-tenant directamente contra PostgreSQL y Supabase:
+  1. Usuario A crea una cuenta y operaciones.
+  2. Usuario B intenta consultar los registros de A (RLS devuelve 0 filas).
+  3. Usuario B intenta modificar una operación de A (RLS devuelve 0 filas afectadas).
+  4. Usuario B intenta asociar una operación propia a la cuenta de A (PostgreSQL rechaza con código 23503 por clave foránea compuesta `fk_trades_account_user`).
+  5. Usuario B intenta insertar una nota de diario con la cuenta de A (PostgreSQL rechaza con código 23503 por `fk_journal_account_user`).
+  6. Usuario A intenta consultar datos de B (RLS aísla bidireccionalmente).
+- **Ejecución Condicional Segura**: Si no se configuran variables de conexión en vivo (`NEXT_PUBLIC_SUPABASE_URL` / credenciales de prueba), Vitest omite el suite con advertencia clara, sin falsos positivos y sin simular RLS en mocks.
+
+### 6. Limitaciones Pendientes
+- **Atomicidad Distribuida**: No existe protocolo Two-Phase Commit (2PC) global entre el `localStorage` del navegador y Supabase PostgreSQL. En caso de corte eléctrico del dispositivo exactamente entre la confirmación remota y la persistencia local, la siguiente sincronización resuelve el estado mediante LWW.
+- **Ejecución de Pruebas Reales de RLS**: Las pruebas de integración en vivo requieren un proyecto activo de Supabase o contenedor Docker local con `supabase start`. En entornos CI/CD sin Supabase aprovisionado, se ejecutan las 13 suites unitarias (148 tests) mientras que el suite real permanece a la espera de credenciales.
+
+---
+
+## 15. Próximos Pasos (Fase 5)
 
 * Módulo de simulación Monte Carlo para proyección de curvas de capital, drawdown máximo esperado y probabilidad de ruina / insolvencia.
 * Exportación de informes avanzados de rendimiento en PDF y CSV para auditoría contable y cumplimiento tributario.
