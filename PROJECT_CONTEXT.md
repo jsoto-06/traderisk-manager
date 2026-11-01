@@ -1123,13 +1123,13 @@ Para evitar heredar picos históricos entre evaluaciones y garantizar que ningun
 1. **Sentencia SQL Parametrizada Válida y Atómica**:
    ```sql
    UPDATE public.accounts
-   SET peak_equity = GREATEST(COALESCE(peak_equity, 0), $1),
-       updated_at = timezone('utc'::text, now())
+   SET peak_equity = pg_catalog.greatest(pg_catalog.coalesce(peak_equity, 0), $1),
+       updated_at = pg_catalog.timezone('utc'::text, pg_catalog.now())
    WHERE id = $2
-     AND user_id = auth.uid()
-     AND COALESCE(evaluation_cycle_id, '') = COALESCE($3, '');
+     AND user_id = (SELECT auth.uid())
+     AND pg_catalog.coalesce(evaluation_cycle_id, '') = pg_catalog.coalesce($3, '');
    ```
-2. **Función RPC Atómica en PostgreSQL (`SECURITY DEFINER` con RLS)**:
+2. **Función RPC Atómica en PostgreSQL (`SECURITY DEFINER` con Seguridad Endurecida)**:
    ```sql
    CREATE OR REPLACE FUNCTION public.update_account_peak_equity(
      p_account_id UUID,
@@ -1138,27 +1138,42 @@ Para evitar heredar picos históricos entre evaluaciones y garantizar que ningun
    ) RETURNS NUMERIC
    LANGUAGE plpgsql
    SECURITY DEFINER
-   SET search_path = public, auth, pg_temp
+   SET search_path = ''
    AS $$
    DECLARE
      v_updated_peak NUMERIC;
    BEGIN
+     -- 1. Validación estricta de entrada: no NULL, no negativo y numéricamente finito
+     IF p_new_peak IS NULL OR p_new_peak < 0 OR p_new_peak != p_new_peak THEN
+       RAISE EXCEPTION 'Invalid peak equity value: %', p_new_peak USING ERRCODE = '22003';
+     END IF;
+
+     -- 2. Actualización atómica con referencias completamente cualificadas y chequeo RLS
      UPDATE public.accounts
-     SET peak_equity = GREATEST(COALESCE(peak_equity, 0), p_new_peak),
-         updated_at = timezone('utc'::text, now())
+     SET peak_equity = pg_catalog.greatest(pg_catalog.coalesce(peak_equity, 0), p_new_peak),
+         updated_at = pg_catalog.timezone('utc'::text, pg_catalog.now())
      WHERE id = p_account_id
-       AND user_id = auth.uid()
-       AND COALESCE(evaluation_cycle_id, '') = COALESCE(p_evaluation_cycle_id, '')
+       AND user_id = (SELECT auth.uid())
+       AND pg_catalog.coalesce(evaluation_cycle_id, '') = pg_catalog.coalesce(p_evaluation_cycle_id, '')
      RETURNING peak_equity INTO v_updated_peak;
-     
+
+     -- 3. Comportamiento explícito cuando no exista una fila actualizable
+     IF NOT FOUND THEN
+       RAISE EXCEPTION 'Account % not found, unauthorized, or evaluation cycle mismatch', p_account_id USING ERRCODE = 'P0002';
+     END IF;
+
      RETURN v_updated_peak;
    END;
    $$;
+
+   -- 4. Revocar ejecución pública y conceder exclusivamente al rol autenticado
+   REVOKE ALL ON FUNCTION public.update_account_peak_equity(UUID, NUMERIC, TEXT) FROM PUBLIC;
+   GRANT EXECUTE ON FUNCTION public.update_account_peak_equity(UUID, NUMERIC, TEXT) TO authenticated;
    ```
 3. **Garantías de Integridad y Aislamiento**:
-   - **Monotonicidad Irreversible**: La función `GREATEST(COALESCE(peak_equity, 0), p_new_peak)` garantiza matemáticamente que el pico nunca decrezca, incluso si llega una actualización distribuida con un timestamp posterior pero con un valor inferior.
-   - **Aislamiento por Ciclo de Evaluación (`evaluationCycleId`)**: Cada intento de evaluación o reto de prop firm posee un identificador de ciclo inmutable (`evaluationCycleId`, ej. `"eval_apex_50k_v1"`). Si el usuario resetea la cuenta tras una descalificación o inicia una nueva fase, se genera un nuevo `evaluationCycleId`. La cláusula `COALESCE(evaluation_cycle_id, '') = COALESCE(p_evaluation_cycle_id, '')` impide que la nueva evaluación herede picos alcanzados en el reto anterior.
-   - **Verificación Estricta de Titularidad (RLS)**: La condición `user_id = auth.uid()` garantiza que solo el propietario autenticado de la cuenta pueda actualizar su pico.
+   - **Monotonicidad Irreversible**: `pg_catalog.greatest(pg_catalog.coalesce(peak_equity, 0), p_new_peak)` garantiza que el pico nunca decrezca, incluso si llega una actualización distribuida con timestamp posterior pero con un valor inferior.
+   - **Aislamiento por Ciclo de Evaluación (`evaluationCycleId`)**: Cada intento de evaluación de prop firm posee un identificador inmutable (`evaluationCycleId`, ej. `"eval_apex_50k_v1"`). Al reiniciar un reto o pasar de fase, se asigna un nuevo `evaluationCycleId`. La cláusula `pg_catalog.coalesce(evaluation_cycle_id, '') = pg_catalog.coalesce(p_evaluation_cycle_id, '')` impide que la nueva evaluación herede picos alcanzados en el reto anterior.
+   - **Verificación Estricta de Titularidad (RLS)**: La condición `user_id = (SELECT auth.uid())` garantiza que solo el propietario autenticado de la cuenta pueda actualizar su pico.
 4. **Segregación de Métricas de Pico**:
    - `peakBalance`: Máximo balance realizado cerrado.
    - `peakEquityIntraday`: Máxima equidad alcanzada en tiempo real. **Solo se actualiza cuando el 100% de las posiciones abiertas poseen cotizaciones `LIVE`**.
@@ -1168,16 +1183,24 @@ Para evitar heredar picos históricos entre evaluaciones y garantizar que ningun
 
 ### 5. Validación Rigurosa de Fuentes Externas (Binance y Feeds Públicos)
 
-Binance WebSocket y REST son servicios públicos que no requieren API Keys ni credenciales privadas. No obstante, **ninguna cotización externa se inyecta directamente en los cálculos de riesgo sin una validación previa estricta**:
+Binance WebSocket y REST son servicios públicos que no requieren API Keys privadas. No obstante, **ninguna cotización externa carece de límites ni se inyecta directamente en los cálculos de riesgo sin una validación previa estricta**:
 
-1. **Validación Estructural de Datos**:
-   - Comprobación de tipos numéricos positivos y finitos (rechazo incondicional de `NaN`, `null`, `undefined` o $\le 0$).
-2. **Coherencia del Libro de Órdenes**:
-   - Invariante obligatoria: $\text{Bid} \le \text{Mid} \le \text{Ask}$ y $\text{Spread} = \text{Ask} - \text{Bid} > 0$.
-   - Si $\text{Bid} > \text{Ask}$ (libro cruzado anómalo por error del feed), la cotización se descarta de inmediato sin alterar la última cotización válida.
-3. **Filtro de Picos Anómalos (Spike Filter / Sanity Check)**:
-   - Si un tick entrante se desvía más de un umbral porcentual configurable (ej. $\pm 10\%$) respecto a la media móvil de ticks recientes sin un incremento sustancial de volumen, la cotización se etiqueta como sospechosa (`suspect_spike`) y no se utiliza de forma inmediata para el cálculo de liquidación ni margen.
-4. **Validación Temporal con Reloj Monotónico**:
+1. **Límites Verificados del WebSocket Público de Binance**:
+   - Límite de **5 mensajes entrantes por segundo** por conexión.
+   - Máximo de **1,024 streams combinados** por conexión WebSocket.
+   - Límite de **300 intentos de conexión cada 5 minutos por dirección IP**.
+   - **Desconexión forzosa programada por Binance a las 24 horas continuas**. El cliente debe gestionar la reconexión automática sin pérdida de estado.
+   - Tramas de transporte `Ping/Pong` según RFC 6455 cada 3 minutos.
+2. **Diferenciación entre `bookTicker` y Flujos de Volumen**:
+   - El stream `<symbol>@bookTicker` proporciona exclusivamente: mejor precio de compra (`bidPrice`), cantidad en compra (`bidQty`), mejor precio de venta (`askPrice`) y cantidad en venta (`askQty`). **No incluye volumen negociado en 24h ni volumen de velas**.
+   - Para aplicar filtros de picos basados en volumen, se documenta la necesidad de suscribir un stream adicional: `<symbol>@ticker` (resumen 24h con volumen total) o `<symbol>@trade` / `<symbol>@aggTrade` (flujo de operaciones ejecutadas con tamaño real).
+3. **Coherencia del Libro de Órdenes y Tratamiento de Spread Cero**:
+   - **Spread Cero**: Se permite spread cero ($\text{Spread} = \text{Ask} - \text{Bid} == 0$) cuando sea válido para el mercado (ej. pares de stablecoins USDT/USDC, pares de trading sin comisiones o cruces instantáneos).
+   - **Rechazo Estricto de Libro Cruzado**: Si $\text{Bid} > \text{Ask}$, el tick se rechaza inmediatamente por anomalía grave de mercado.
+4. **Tratamiento y Reevaluación de Anomalías (`suspect_spike`)**:
+   - Si un tick entrante se desvía más de un umbral porcentual configurable (ej. $\pm 10\%$) respecto a la media de ticks recientes sin confirmación de volumen en `<symbol>@ticker`, la cotización se etiqueta como `suspect_spike`, conservando la última cotización válida para los cálculos de margen y liquidación.
+   - **Reevaluación de Ticks Sospechosos**: Si 3 ticks consecutivos posteriores confirman el nuevo nivel de precio con profundidad coherente, el sistema revalúa la cotización y la transiciona a válida (movimiento genuino de mercado), limpiando el estado `suspect_spike`.
+5. **Validación Temporal con Reloj Monotónico**:
    - Medición de intervalos con `performance.now()` en el navegador (inmune a saltos NTP).
    - Descarte inmediato de ticks fuera de orden ($\text{providerTimestamp} < \text{lastProcessedTimestamp}$) y rechazo de timestamps futuros superiores a 2,000 ms respecto al reloj local ajustado por offset.
 
@@ -1225,21 +1248,25 @@ export interface PropFirmRuleProfile {
 
 ### 7. Matriz de Pruebas de Aceptación Previa a la Implementación
 
-| Identificador | Prueba Obligatoria | Condición de Aprobación Esperada |
+> [!NOTE]
+> **Estado de las Pruebas TEST-8.1 a TEST-8.13**:
+> Los casos listados a continuación representan **criterios de diseño y pruebas de aceptación especificadas**. **NO están ejecutados todavía**; se implementarán y validarán formalmente en la suite de pruebas automatizadas durante el Paso 8.8 de la Fase 8. La suite actual conserva los **265 tests aprobados** correspondientes a las Fases 1 a 7.
+
+| Identificador | Prueba Especificada | Condición de Aprobación Esperada |
 | :--- | :--- | :--- |
 | **TEST-8.1** | Long con SL en ganancias (profit) | `CapitalRiskAtSL === 0.00`. Cero valor negativo. `EstimatedExitCosts` mostrado por separado. |
 | **TEST-8.2** | Short con SL en ganancias (profit) | `CapitalRiskAtSL === 0.00`. Exposición de precio nula. |
 | **TEST-8.3** | SL situado en zona de pérdida | `CapitalRiskAtSL > 0.00` evaluado con fórmula direccional exacta. |
 | **TEST-8.4** | Mercado cruzó el Stop Loss | `MarkToStopDistance === 0.00`. No arroja distancias negativas. |
-| **TEST-8.5** | Conversión FX a divisa de cuenta | PnL en divisa cotizada convertido con tipo Bid/Ask sin invertir el multiplicador. |
+| **TEST-8.5** | Conversión FX a divisa de cuenta | Ejemplo explícito: Cuenta en EUR, trade Long GBP/USD $\implies$ PnL en USD. Conversión a EUR mediante tasa Ask de compra de EUR ($1 / \text{Ask}_{\text{EUR/USD}}$). Par indirecto convertido correctamente sin invertir multiplicador. |
 | **TEST-8.6** | PnL y Funding Coin-M Inverso | Valuación asimétrica en BTC con `PnL_net` exacto deduciendo apertura, funding y cierre proyectado. |
-| **TEST-8.7** | Conciliación de comisiones | `Equity` pre-cierre $\equiv$ `Balance` post-cierre al liquidar la última posición. Cero doble deducción. |
+| **TEST-8.7** | Conciliación de comisiones y ejecución | **Caso A (Ejecución teórica perfecta)**: `actualExitPrice == estimatedExitPrice` y `actualCommissions == estimatedCommissions` $\implies \text{Equity}_{\text{pre}} \equiv \text{Balance}_{\text{post}}$.<br>**Caso B (Diferencia legítima de mercado)**: Si existe slippage real (`actualExitPrice != estimatedExitPrice`) o variación de comisiones, el balance asienta el resultado real $\Delta \text{Balance} = \text{ActualNet}$, auditando la varianza de ejecución como $\text{SlippageVariance} = \text{ActualNet} - \text{EstimatedNet}$. Cero doble deducción. |
 | **TEST-8.8** | Fusión Monotónica de Peak Equity | Actualización remota con timestamp posterior pero `peakEquity` inferior no reduce el pico local. |
 | **TEST-8.9** | Aislamiento por `evaluationCycleId`| Al cambiar de ciclo o reiniciar cuenta, el pico histórico del ciclo previo no se propaga al nuevo. |
 | **TEST-8.10**| Rechazo de ticks anómalos | Cotización con timestamp fuera de orden o futuro > 2s descartada sin alterar la última cotización. |
 | **TEST-8.11**| Transición Funding Devengado / Liquidado | Al liquidarse funding sobre posición abierta: $\Delta \text{LedgerBalance} = +\text{funding}$, $\Delta \text{accruedFunding} = -\text{funding} \implies \Delta \text{Equity} \equiv 0.00$. Cero doble conteo. |
-| **TEST-8.12**| Concurrencia Atómica SQL de Peak Equity | Múltiples updates concurrentes en `update_account_peak_equity` convergen estrictamente al valor `GREATEST` respetando `evaluationCycleId` y RLS de usuario. |
-| **TEST-8.13**| Validación Estructural de Feed Externo | Rechazo inmediato de cotización si $\text{Bid} > \text{Ask}$ (libro cruzado) o ante desvío instantáneo $> \pm 10\%$ sin volumen (`suspect_spike`). |
+| **TEST-8.12**| Concurrencia Atómica SQL de Peak Equity | Múltiples updates concurrentes en `update_account_peak_equity` convergen estrictamente al valor `GREATEST` respetando `evaluationCycleId` y RLS de usuario con `SET search_path = ''`. |
+| **TEST-8.13**| Validación Estructural de Feed Externo | Spread cero permitido ($\text{Bid} == \text{Ask}$). Rechazo inmediato si $\text{Bid} > \text{Ask}$ (libro cruzado) o ante desvío $> \pm 10\%$ sin volumen (`suspect_spike`). Reevaluación tras 3 ticks consecutivos válidos. |
 
 ---
 
