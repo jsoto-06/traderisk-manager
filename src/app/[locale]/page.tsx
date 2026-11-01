@@ -39,6 +39,7 @@ import {
 export default function DashboardPage() {
   const { locale, t } = useLocale();
   const { isLoaded, activeAccount, activeAccountTrades } = useStorage();
+  const isEs = locale === 'es';
 
   // Calculate statistics for active account
   const stats = useMemo(() => {
@@ -55,6 +56,8 @@ export default function DashboardPage() {
     if (!activeAccount) return null;
     return calculateDrawdownMetrics(activeAccountTrades, activeAccount.initialCapital);
   }, [activeAccount, activeAccountTrades]);
+
+  const currentDrawdown = drawdownMetrics ? drawdownMetrics.currentDrawdownPercent : 0;
 
   // Derived metrics
   const totalPnL = activeAccount ? activeAccount.balance - activeAccount.initialCapital : 0;
@@ -272,17 +275,23 @@ export default function DashboardPage() {
         >
           <div className="space-y-4">
             <ProgressBar
-              value={Math.min(Math.max(openRiskPercent, 0), activeAccount.maxDrawdown)}
+              value={Math.min(Math.max(currentDrawdown, 0), activeAccount.maxDrawdown)}
               max={activeAccount.maxDrawdown}
-              variant={openRiskPercent > activeAccount.dailyLossLimit ? 'red' : 'yellow'}
+              variant={
+                currentDrawdown >= activeAccount.maxDrawdown
+                  ? 'red'
+                  : currentDrawdown >= activeAccount.dailyLossLimit
+                  ? 'yellow'
+                  : 'cyan'
+              }
               size="lg"
               label="Consumo de Drawdown"
-              sublabel={`Límite: ${activeAccount.maxDrawdown}%`}
+              sublabel={`Drawdown Actual: ${currentDrawdown.toFixed(2)}% (Límite: ${activeAccount.maxDrawdown}%)`}
             />
             <div className="flex justify-between text-xs text-[#94A3B8] pt-1">
-              <span>Tipo: {activeAccount.drawdownType}</span>
+              <span>Límite Diario: {activeAccount.dailyLossLimit}%</span>
               <span className="text-[#00F0FF]">
-                Riesgo por trade: {activeAccount.riskPerTrade}%
+                Riesgo Abierto: {openRiskPercent.toFixed(2)}% ({formatCurrency(openRiskAmount, activeAccount.currency, locale)})
               </span>
             </div>
           </div>
@@ -449,7 +458,9 @@ export default function DashboardPage() {
               </div>
             ) : (
               recentTrades.map((trade) => {
-                const isProfit = (trade.result ?? 0) >= 0;
+                const comms = trade.commissions || 0;
+                const netTradeResult = (trade.result ?? 0) - comms;
+                const isProfit = netTradeResult >= 0;
                 return (
                   <div
                     key={trade.id}
@@ -480,13 +491,20 @@ export default function DashboardPage() {
 
                     <div className="text-right">
                       {trade.status === 'closed' && trade.result != null ? (
-                        <div
-                          className={`font-semibold text-xs font-mono ${
-                            isProfit ? 'text-[#10B981]' : 'text-[#EF4444]'
-                          }`}
-                        >
-                          {isProfit ? '+' : ''}
-                          {formatCurrency(trade.result, activeAccount.currency, locale)}
+                        <div>
+                          <div
+                            className={`font-semibold text-xs font-mono ${
+                              isProfit ? 'text-[#10B981]' : 'text-[#EF4444]'
+                            }`}
+                          >
+                            {isProfit ? '+' : ''}
+                            {formatCurrency(netTradeResult, activeAccount.currency, locale)}
+                          </div>
+                          {comms > 0 && (
+                            <div className="text-[10px] text-[#8899A6] font-mono">
+                              {isEs ? 'Bruto:' : 'Gross:'} {formatCurrency(trade.result, activeAccount.currency, locale)}
+                            </div>
+                          )}
                         </div>
                       ) : (
                         <span className="text-[11px] text-[#00F0FF] font-medium">

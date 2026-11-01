@@ -72,7 +72,8 @@ export function calculateStatistics(
   ];
 
   for (const trade of sorted) {
-    const result = trade.result!;
+    const comms = trade.commissions || 0;
+    const result = Number((trade.result! - comms).toFixed(4));
 
     if (result > 0) {
       winningTrades++;
@@ -99,7 +100,7 @@ export function calculateStatistics(
     if (result > bestTrade) bestTrade = result;
     if (result < worstTrade) worstTrade = result;
 
-    runningBalance += result;
+    runningBalance = Number((runningBalance + result).toFixed(2));
     balanceHistory.push({
       date: trade.closeDate ?? trade.openDate,
       balance: runningBalance,
@@ -107,7 +108,7 @@ export function calculateStatistics(
   }
 
   const totalTrades = sorted.length;
-  const netProfit = grossProfit - grossLoss;
+  const netProfit = Number((grossProfit - grossLoss).toFixed(2));
 
   // Win rate
   const winRate = totalTrades > 0 ? (winningTrades / totalTrades) * 100 : 0;

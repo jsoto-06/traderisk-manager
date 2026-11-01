@@ -112,8 +112,9 @@ describe('Statistics Engine — Functional & Edge-Case Audit', () => {
     expect(stats.winningTrades).toBe(2);
     expect(stats.losingTrades).toBe(0);
     expect(stats.winRate).toBe(100);
-    expect(stats.netProfit).toBe(150);
-    expect(stats.averageWin).toBe(75);
+    // Net profit = (100 - 1) + (50 - 1) = 99 + 49 = 148
+    expect(stats.netProfit).toBe(148);
+    expect(stats.averageWin).toBe(74);
     expect(stats.averageLoss).toBe(0);
     expect(stats.maxWinStreak).toBe(2);
     expect(stats.currentStreak).toEqual({ type: 'win', count: 2 });
@@ -165,9 +166,10 @@ describe('Statistics Engine — Functional & Edge-Case Audit', () => {
     expect(stats.losingTrades).toBe(2);
     expect(stats.winRate).toBe(0);
     expect(stats.profitFactor).toBe(0);
-    expect(stats.netProfit).toBe(-100);
+    // Net loss = (-30 - 1) + (-70 - 1) = -31 + -71 = -102
+    expect(stats.netProfit).toBe(-102);
     expect(stats.averageWin).toBe(0);
-    expect(stats.averageLoss).toBe(50); // (30 + 70) / 2 = 50
+    expect(stats.averageLoss).toBe(51); // (31 + 71) / 2 = 51
     expect(stats.maxLossStreak).toBe(2);
     expect(stats.currentStreak).toEqual({ type: 'loss', count: 2 });
   });
@@ -312,5 +314,62 @@ describe('Statistics Engine — Functional & Edge-Case Audit', () => {
     expect(stats.balanceHistory[2].balance).toBe(5150);
     expect(stats.balanceHistory[3].balance).toBe(5250);
     expect(stats.netProfit).toBe(250);
+  });
+
+  it('correctly accounts for commissions in net PnL, win/loss classification, and balance trajectory', () => {
+    const tradesWithCommissions: Trade[] = [
+      {
+        id: 't-comm-1',
+        accountId: 'acc1',
+        asset: 'BTC',
+        direction: 'long',
+        entryPrice: 80000,
+        stopLoss: 79000,
+        takeProfit: 82000,
+        size: 0.1,
+        openDate: '2026-10-01T10:00:00Z',
+        closeDate: '2026-10-01T15:00:00Z',
+        status: 'closed',
+        result: 100, // Gross +100
+        commissions: 10, // Net +90 (Win)
+        strategy: '',
+        timeframe: '',
+        notes: '',
+      },
+      {
+        id: 't-comm-2',
+        accountId: 'acc1',
+        asset: 'ETH',
+        direction: 'long',
+        entryPrice: 3000,
+        stopLoss: 2900,
+        takeProfit: 3200,
+        size: 1,
+        openDate: '2026-10-02T10:00:00Z',
+        closeDate: '2026-10-02T15:00:00Z',
+        status: 'closed',
+        result: 5, // Gross +5
+        commissions: 15, // Net -10 (Loss due to commissions)
+        strategy: '',
+        timeframe: '',
+        notes: '',
+      },
+    ];
+
+    const stats = calculateStatistics(tradesWithCommissions, 10000);
+
+    expect(stats.totalTrades).toBe(2);
+    expect(stats.winningTrades).toBe(1); // Only trade 1 is net positive
+    expect(stats.losingTrades).toBe(1); // Trade 2 is net negative despite gross +5
+    expect(stats.winRate).toBe(50);
+    expect(stats.netProfit).toBe(80); // 90 - 10 = 80
+    expect(stats.bestTrade).toBe(90);
+    expect(stats.worstTrade).toBe(-10);
+
+    // Initial 10000 -> Day 1 (10090) -> Day 2 (10080)
+    expect(stats.balanceHistory).toHaveLength(3);
+    expect(stats.balanceHistory[0].balance).toBe(10000);
+    expect(stats.balanceHistory[1].balance).toBe(10090);
+    expect(stats.balanceHistory[2].balance).toBe(10080);
   });
 });

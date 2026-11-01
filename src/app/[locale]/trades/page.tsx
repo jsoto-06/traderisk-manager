@@ -202,8 +202,13 @@ export default function TradesPage() {
   }, [trades, selectedAccountId, statusFilter, directionFilter, searchQuery]);
 
   const totalClosed = filteredTrades.filter((t) => t.status === 'closed');
-  const netPnL = totalClosed.reduce((sum, t) => sum + (t.result ?? 0), 0);
-  const wins = totalClosed.filter((t) => (t.result ?? 0) > 0).length;
+  const netPnL = totalClosed.reduce(
+    (sum, t) => sum + ((t.result ?? 0) - (t.commissions || 0)),
+    0,
+  );
+  const wins = totalClosed.filter(
+    (t) => (t.result ?? 0) - (t.commissions || 0) > 0,
+  ).length;
   const winRate = totalClosed.length > 0 ? (wins / totalClosed.length) * 100 : 0;
 
   const tableHeaders = isEs
@@ -331,7 +336,9 @@ export default function TradesPage() {
         emptyText={isEs ? 'No se encontraron operaciones con los filtros aplicados' : 'No trades match the current filters'}
       >
         {filteredTrades.map((trade) => {
-          const isProfit = (trade.result ?? 0) >= 0;
+          const comms = trade.commissions || 0;
+          const netTradeResult = (trade.result ?? 0) - comms;
+          const isProfit = netTradeResult >= 0;
           return (
             <TableRow key={trade.id}>
               {/* Date */}
@@ -379,14 +386,21 @@ export default function TradesPage() {
               {/* Result */}
               <TableCell>
                 {trade.status === 'closed' && trade.result != null ? (
-                  <span
-                    className={`font-semibold font-mono text-xs ${
-                      isProfit ? 'text-[#10B981]' : 'text-[#EF4444]'
-                    }`}
-                  >
-                    {isProfit ? '+' : ''}
-                    {formatCurrency(trade.result, activeAccount?.currency || 'USD', locale)}
-                  </span>
+                  <div className="flex flex-col">
+                    <span
+                      className={`font-semibold font-mono text-xs ${
+                        isProfit ? 'text-[#10B981]' : 'text-[#EF4444]'
+                      }`}
+                    >
+                      {isProfit ? '+' : ''}
+                      {formatCurrency(netTradeResult, activeAccount?.currency || 'USD', locale)}
+                    </span>
+                    {comms > 0 && (
+                      <span className="text-[10px] text-[#8899A6] font-mono">
+                        {isEs ? 'Bruto:' : 'Gross:'} {formatCurrency(trade.result, activeAccount?.currency || 'USD', locale)}
+                      </span>
+                    )}
+                  </div>
                 ) : (
                   <span className="text-xs text-[#00F0FF] font-medium flex items-center gap-1">
                     <Clock className="w-3.5 h-3.5" /> {isEs ? 'Abierta' : 'Open'}
@@ -661,7 +675,7 @@ export default function TradesPage() {
             />
 
             <Input
-              label={isEs ? 'Resultado Neto ($ PnL)' : 'Net Result ($ PnL)'}
+              label={isEs ? 'Resultado Bruto ($ PnL)' : 'Gross Result ($ PnL)'}
               type="number"
               step="any"
               value={closeResult}
@@ -670,6 +684,28 @@ export default function TradesPage() {
               required
             />
           </div>
+
+          {closingTrade && (
+            <div className="p-2.5 bg-[#0A1128] border border-[#1E2D4A] rounded-lg text-xs flex justify-between items-center text-[#94A3B8]">
+              <span>{isEs ? 'Comisiones registradas:' : 'Registered commissions:'}</span>
+              <span className="font-mono text-[#F5F7FA]">-${(closingTrade.commissions || 0).toFixed(2)}</span>
+              <span className="text-[#64748B]">|</span>
+              <span>{isEs ? 'Impacto neto en balance:' : 'Net balance impact:'}</span>
+              <span
+                className={`font-mono font-bold ${
+                  (parseFloat(closeResult) || 0) - (closingTrade.commissions || 0) >= 0
+                    ? 'text-[#10B981]'
+                    : 'text-[#EF4444]'
+                }`}
+              >
+                {formatCurrency(
+                  (parseFloat(closeResult) || 0) - (closingTrade.commissions || 0),
+                  activeAccount?.currency || 'USD',
+                  locale,
+                )}
+              </span>
+            </div>
+          )}
         </form>
       </Modal>
 
