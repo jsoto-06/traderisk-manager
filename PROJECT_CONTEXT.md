@@ -844,7 +844,41 @@ En la Fase 5.2.2 se ejecutó una auditoría matemática y estadística de cierre
 
 ---
 
-## 20. Próximos Pasos (Fase 6)
+## 20. FASE 6 — Auditoría Integral de Integración Funcional y Coherencia de Datos (Completada)
+
+En la Fase 6 se ejecutó una auditoría funcional integral y de coherencia de datos de extremo a extremo sobre todos los módulos de TradeRisk Manager.
+
+### 1. Hallazgos y Correcciones Críticas de Coherencia de Datos (P0/P1)
+- **Conciliación de PnL Neto y Comisiones en `calculateStatistics` (`src/lib/statistics/index.ts`)**:
+  - *Problema*: `calculateStatistics` acumulaba `runningBalance += trade.result!` y `grossProfit / grossLoss` utilizando el resultado bruto del trade, ignorando las comisiones (`trade.commissions`).
+  - *Impacto*: Si las operaciones tenían comisiones, la curva de balance (`stats.balanceHistory`) y el beneficio neto (`stats.netProfit`) divergían del balance real de la cuenta (`activeAccount.balance`) y del PnL total del dashboard. Además, operaciones con beneficio bruto inferior a sus comisiones (ej. bruto +\$5, comisiones \$15 $\to$ pérdida neta -\$10) se clasificaban erróneamente como operaciones ganadoras.
+  - *Resolución*: Se refactorizó `calculateStatistics` para operar con `netResult = trade.result! - (trade.commissions || 0)`, asegurando coincidencia al céntimo entre `balanceHistory[last].balance`, `activeAccount.balance`, `expectancy.netProfit` y `totalPnL`.
+- **Claridad Contable y Prevención de Doble Deducción en Cierre de Operaciones (`src/app/[locale]/trades/page.tsx`)**:
+  - *Problema*: El modal de cierre de operaciones calculaba `pnl = (exit - entry) * size` (PnL bruto), pero mostraba la etiqueta *"Resultado Neto (\$ PnL)"*.
+  - *Impacto*: Al someter el formulario, `useStorage.ts` restaba las comisiones registradas (`net = result - commissions`). Si el usuario introducía manualmente un resultado creyendo que debía ser neto, se producía una doble deducción de comisiones.
+  - *Resolución*: Se renombró la etiqueta a *"Resultado Bruto (\$ PnL)"* y se incorporó una tarjeta de desglose en tiempo real que expone con transparencia las comisiones y el impacto neto exacto en el balance de la cuenta.
+- **Métricas de Resumen y Listado de Operaciones**:
+  - En `TradesPage`, el KPI superior y la columna de resultado de la tabla se actualizaron para computar PnL neto (`(t.result ?? 0) - (t.commissions || 0)`), mostrando el desglose bruto/comisión cuando existen comisiones.
+- **Monitoreo de Drawdown en Dashboard (`src/app/[locale]/page.tsx`)**:
+  - La barra de consumo de drawdown se conectó con `drawdownMetrics.currentDrawdownPercent` (drawdown real histórico bajo agua), manteniendo diferenciado el riesgo potencial abierto (`openRiskPercent`).
+
+### 2. Validación Integral de Arquitectura e Integraciones
+- **Ciclo Completo**: Creación de cuenta $\to$ cálculo de posición en calculadora multiasset $\to$ apertura de operación $\to$ reflejo de riesgo abierto en Dashboard $\to$ cierre de operación $\to$ conciliación de balance contable y series analíticas.
+- **Aislamiento Multi-Cuenta**: Comprobado que operaciones, diario y estadísticas de una cuenta no interfieren con otras cuentas del sistema.
+- **Persistencia, Tombstones y Soft Deletes**: Eliminación en cascada de cuentas garantizada, generando tombstones distribuidos para sincronización sin pérdida de datos.
+- **Seguridad en Copias de Seguridad (Backup)**: Validación de JSON Schema con Zod, detección de IDs duplicados, control estricto de integridad relacional (rechazo de operaciones o notas huérfanas) y límite DoS de 10 MB.
+
+### 3. Suite de Pruebas y Estado Global
+- Nuevo archivo de test: `src/__tests__/functional-integration-audit.test.ts` (9 tests de integración exhaustiva).
+- Actualización de `src/__tests__/statistics.test.ts` (7 tests).
+- Estado global de Vitest: **250 tests aprobados** (23 archivos de prueba), 6 tests de Supabase real omitidos condicionalmente.
+- TypeScript (`npx tsc --noEmit`): 0 errores.
+- ESLint (`npm run lint`): 0 advertencias, 0 errores.
+- Next.js Turbopack Build (`npm run build`): Prerenderizado estático de 37 páginas exitoso.
+
+---
+
+## 21. Próximos Pasos (Fase 7)
 
 * Exportación de informes cuantitativos en formato PDF y hojas de cálculo CSV para auditorías de riesgo y prop firms.
 * Conexión con proveedores de datos de mercado en tiempo real (Binance API, Interactive Brokers Web API).
