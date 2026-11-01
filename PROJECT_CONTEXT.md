@@ -1195,25 +1195,28 @@ Para evitar heredar picos históricos entre evaluaciones y garantizar que ningun
 
 Binance WebSocket y REST son servicios públicos que no requieren API Keys privadas. No obstante, **ninguna cotización externa carece de límites técnicos ni se inyecta directamente en los cálculos de riesgo sin una validación previa estricta**:
 
-1. **Límites Verificados del WebSocket de Binance (Separados por Producto)**:
-   - *Aclaración sobre Mensajes por Segundo*: El límite de mensajes entrantes se refiere estrictamente a **mensajes enviados desde el cliente hacia el servidor (upstream / client-to-server)**, como solicitudes JSON de suscripción/desuscripción (`{"method": "SUBSCRIBE", ...}`). **No aplica a los ticks de cotización emitidos por el exchange hacia el cliente (downstream)**, los cuales pueden superar decenas o cientos de eventos por segundo sin restricción.
+1. **Límites Verificados del WebSocket de Binance (Diferenciados por Producto según Documentación Oficial)**:
+   - *Aclaración sobre Mensajes por Segundo*: El límite de mensajes entrantes se refiere estrictamente a **mensajes enviados desde el cliente hacia el servidor (upstream / client-to-server)**, como solicitudes JSON de suscripción/desuscripción (`{"method": "SUBSCRIBE", ...}`), tramas Ping o respuestas Pong. **No aplica a los ticks de cotización emitidos por el exchange hacia el cliente (downstream)**, los cuales pueden superar decenas o cientos de eventos por segundo sin restricción. Superar el límite upstream provoca la **desconexión inmediata del socket** y violaciones reiteradas conllevan un **bloqueo temporal de la dirección IP**.
    - **Binance Spot WebSocket (`wss://stream.binance.com:9443/ws`)**:
      - Upstream: máximo **5 mensajes del cliente por segundo** por conexión.
-     - Streams: máximo de **1,024 streams combinados** por conexión.
-     - Conexiones: límite de **300 intentos de conexión cada 5 minutos por dirección IP**.
-     - Desconexión forzosa: Binance desconecta forzosamente cualquier socket a las **24 horas continuas**.
+     - Streams combinados: máximo de **1,024 streams** por conexión WebSocket.
+     - Frecuencia de conexión: máximo **300 intentos de conexión cada 5 minutos por dirección IP**.
+     - Desconexión obligatoria: Binance desconecta forzosamente cualquier conexión continua a las **24 horas exactas**.
+     - Protocolo de control: Ping frames enviados periódicamente cada 3 minutos.
    - **Binance USD-M Futures WebSocket (`wss://fstream.binance.com/ws`)**:
-     - Pool y endpoint completamente independientes de Spot.
-     - Upstream: máximo **5 mensajes del cliente por segundo** por conexión.
-     - Streams: máximo de **200 streams** por conexión pública combinada.
-     - Conexiones: límite de **300 intentos de conexión cada 5 minutos por IP**.
-     - Desconexión forzosa: corte obligatorio a las **24 horas continuas**.
-     - Heartbeat RFC 6455: el servidor envía tramas `Ping` cada 3 minutos; el navegador responde con `Pong` automáticamente. Si no hay actividad en 10 minutos, el servidor aborta el socket.
+     - Pool de conexiones y endpoint totalmente segregados de Spot.
+     - Upstream: máximo **10 mensajes del cliente por segundo** por conexión (verificado en documentación oficial de Binance Futures).
+     - Streams combinados: hasta **1,024 streams** por conexión única.
+     - Frecuencia de conexión: máximo **300 intentos de conexión cada 5 minutos por IP**.
+     - Desconexión obligatoria: corte forzoso automático a las **24 horas continuas**.
+     - Control de Heartbeat: el servidor emite tramas `Ping` RFC 6455 cada 3 minutos; el cliente debe responder con `Pong` antes de 10 minutos para evitar la terminación del socket.
    - **Binance Coin-M Futures WebSocket (`wss://dstream.binance.com/ws`)**:
-     - Endpoint y pool de cuotas aislado de Spot y USD-M.
-     - Upstream: máximo **5 mensajes del cliente por segundo** por socket.
-     - Desconexión forzosa: corte obligatorio a las **24 horas continuas**.
-     - Heartbeat RFC 6455: tramas `Ping/Pong` cada 3 minutos.
+     - Pool de cuotas y endpoint totalmente aislado de Spot y USD-M.
+     - Upstream: máximo **10 mensajes del cliente por segundo** por conexión (verificado en documentación oficial de Binance Delivery).
+     - Streams combinados: hasta **1,024 streams** por conexión única.
+     - Frecuencia de conexión: máximo **300 intentos de conexión cada 5 minutos por IP**.
+     - Desconexión obligatoria: corte forzoso automático a las **24 horas continuas**.
+     - Control de Heartbeat: tramas `Ping/Pong` RFC 6455 cada 3 minutos con tiempo de gracia de 10 minutos.
 2. **Diferenciación entre `bookTicker` y Flujos de Volumen**:
    - El stream `<symbol>@bookTicker` proporciona exclusivamente: mejor precio de compra (`bidPrice`), cantidad en compra (`bidQty`), mejor precio de venta (`askPrice`) y cantidad en venta (`askQty`). **No incluye volumen negociado en 24h ni volumen de velas**.
    - Para aplicar filtros de picos basados en volumen, se documenta la necesidad de suscribir un stream adicional: `<symbol>@ticker` (resumen 24h con volumen total) o `<symbol>@trade` / `<symbol>@aggTrade` (flujo de operaciones ejecutadas con tamaño real).
@@ -1328,7 +1331,36 @@ export interface PropFirmRuleProfile {
 
 ---
 
-## 24. Próximos Pasos (Esperando Autorización Formal)
+## 24. Preparación y Alcance del Paso 8.1 (Pendiente de Autorización Expresa)
 
-* Revisión y visto bueno final de esta especificación técnica de cierre.
-* Una vez concedida la aprobación formal, autorización para la apertura e implementación secuencial del **Paso 8.1** (Tipado y contratos en `src/lib/market-data/types.ts`).
+Una vez aprobada formalmente la planificación documental, la primera implementación técnica se acotará estrictamente al **Paso 8.1**, con el siguiente alcance delimitado:
+
+### 1. Alcance Técnico del Paso 8.1:
+1. **Contratos y Tipos de Cotización**:
+   - Definición de interfaces en `src/lib/market-data/types.ts`: `MarketPriceQuote`, `FeedStatus` (`'live' | 'stale' | 'offline' | 'manual'`), `ProviderId`, `MarketDataProvider`, opciones de suscripción y metadatos de calidad temporal.
+2. **Adaptadores Públicos de Mercado de Binance (Spot, USD-M y Coin-M)**:
+   - Implementación de adaptadores en `src/lib/market-data/binance/` que consumen exclusivamente los streams públicos y anónimos de Binance (`stream.binance.com`, `fstream.binance.com`, `dstream.binance.com`).
+3. **Validación Estructural de Precios**:
+   - Tipos numéricos positivos y finitos (rechazo incondicional de `NaN`, `null`, `undefined` o $\le 0$).
+   - Coherencia del libro de órdenes: spread cero permitido ($\text{Ask} == \text{Bid}$ en stablecoins o pares fee-zero); rechazo estricto si $\text{Bid} > \text{Ask}$.
+   - Detección de picos (`suspect_spike`) ante desvíos $> \pm 10\%$ y mecanismo de reevaluación tras 3 ticks confirmados.
+4. **Validación Temporal Rigurosa**:
+   - Medición de intervalos transcurridos con reloj monotónico `performance.now()`.
+   - Estimación de offset de reloj ($\Delta_{\text{clock}}$) durante el handshake.
+   - Rechazo estricto de ticks fuera de orden y descarte de timestamps futuros superiores a 2,000 ms.
+5. **Gestión de Conexión y Reconexión Resiliente**:
+   - Reconexión automática con retroceso exponencial y jitter ante la desconexión obligatoria de Binance a las 24 horas.
+   - Respuesta automática a tramas Ping/Pong RFC 6455 cada 3 minutos.
+6. **Ciclo de Estados de Salud del Feed**:
+   - Gestión explícita de estados: `LIVE` (verde), `STALE` (amarillo con edad expuesta), `OFFLINE` (rojo con último precio guardado) y `MANUAL` (gris).
+7. **Suite de Pruebas Unitarias del Adaptador y Validaciones**:
+   - Archivo de pruebas unitarias dedicado en `src/__tests__/market-data.test.ts` que valide de forma aislada los contratos, la conexión, la reconexión simulada, el descarte de anomalías y la precisión temporal.
+
+### 2. Restricciones Innegociables del Paso 8.1:
+- **No integrar Finnhub**: permanece formalmente en estado PENDIENTE.
+- **No implementar ejecución de órdenes ni endpoints de trading**: la plataforma es 100% manual.
+- **No solicitar API Keys privadas**: los streams de Binance a implementar son 100% públicos y anónimos.
+- **No abrir ni cerrar posiciones automáticamente**.
+- **No modificar el motor multiactivo existente** auditado en las Fases 3 a 7.
+- **No alterar las fases 1 a 7**.
+- **Esperar autorización previa expresa antes de escribir cualquier archivo de código**.
