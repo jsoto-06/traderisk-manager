@@ -1118,17 +1118,22 @@ Para instrumentos Coin-M (margen y liquidación en la criptomoneda base):
 
 ### 4. Protección y Fusión Monotónica de Peak Equity en Servidor
 
+> [!NOTE]
+> **Estado de la Especificación RPC**: Esta función SQL se define como **especificación arquitectónica rigurosa** para la futura migración de base de datos. **No se afirma que se haya probado realmente, pues no se ha ejecutado contra una instancia activa de PostgreSQL** en esta fase documental.
+
 Para evitar heredar picos históricos entre evaluaciones y garantizar que ninguna sincronización distribuida atrasada reduzca el piso de drawdown:
 
 1. **Sentencia SQL Parametrizada Válida y Atómica**:
    ```sql
    UPDATE public.accounts
-   SET peak_equity = pg_catalog.greatest(pg_catalog.coalesce(peak_equity, 0), $1),
+   SET peak_equity = GREATEST(COALESCE(peak_equity, 0), $1),
        updated_at = pg_catalog.timezone('utc'::text, pg_catalog.now())
    WHERE id = $2
      AND user_id = (SELECT auth.uid())
-     AND pg_catalog.coalesce(evaluation_cycle_id, '') = pg_catalog.coalesce($3, '');
+     AND COALESCE(evaluation_cycle_id, '') = COALESCE($3, '');
    ```
+   *(Nota de sintaxis SQL: `COALESCE` y `GREATEST` son expresiones sintácticas reservadas del estándar SQL en PostgreSQL y **no admiten cualificación mediante esquema**; utilizarlas con `pg_catalog.` provocaría un error de sintaxis).*
+
 2. **Función RPC Atómica en PostgreSQL (`SECURITY DEFINER` con Seguridad Endurecida)**:
    ```sql
    CREATE OR REPLACE FUNCTION public.update_account_peak_equity(
@@ -1143,18 +1148,23 @@ Para evitar heredar picos históricos entre evaluaciones y garantizar que ningun
    DECLARE
      v_updated_peak NUMERIC;
    BEGIN
-     -- 1. Validación estricta de entrada: no NULL, no negativo y numéricamente finito
-     IF p_new_peak IS NULL OR p_new_peak < 0 OR p_new_peak != p_new_peak THEN
+     -- 1. Validación estricta de entrada: no NULL, no negativo, no NaN ni infinitos
+     -- (En PostgreSQL NUMERIC 'NaN'::numeric = 'NaN'::numeric es TRUE, por lo que se rechaza explícitamente)
+     IF p_new_peak IS NULL 
+        OR p_new_peak = 'NaN'::numeric 
+        OR p_new_peak = 'Infinity'::numeric 
+        OR p_new_peak = '-Infinity'::numeric 
+        OR p_new_peak < 0 THEN
        RAISE EXCEPTION 'Invalid peak equity value: %', p_new_peak USING ERRCODE = '22003';
      END IF;
 
-     -- 2. Actualización atómica con referencias completamente cualificadas y chequeo RLS
+     -- 2. Actualización atómica con referencias cualificadas, COALESCE/GREATEST sin prefijo y chequeo RLS
      UPDATE public.accounts
-     SET peak_equity = pg_catalog.greatest(pg_catalog.coalesce(peak_equity, 0), p_new_peak),
+     SET peak_equity = GREATEST(COALESCE(peak_equity, 0), p_new_peak),
          updated_at = pg_catalog.timezone('utc'::text, pg_catalog.now())
      WHERE id = p_account_id
        AND user_id = (SELECT auth.uid())
-       AND pg_catalog.coalesce(evaluation_cycle_id, '') = pg_catalog.coalesce(p_evaluation_cycle_id, '')
+       AND COALESCE(evaluation_cycle_id, '') = COALESCE(p_evaluation_cycle_id, '')
      RETURNING peak_equity INTO v_updated_peak;
 
      -- 3. Comportamiento explícito cuando no exista una fila actualizable
@@ -1171,8 +1181,8 @@ Para evitar heredar picos históricos entre evaluaciones y garantizar que ningun
    GRANT EXECUTE ON FUNCTION public.update_account_peak_equity(UUID, NUMERIC, TEXT) TO authenticated;
    ```
 3. **Garantías de Integridad y Aislamiento**:
-   - **Monotonicidad Irreversible**: `pg_catalog.greatest(pg_catalog.coalesce(peak_equity, 0), p_new_peak)` garantiza que el pico nunca decrezca, incluso si llega una actualización distribuida con timestamp posterior pero con un valor inferior.
-   - **Aislamiento por Ciclo de Evaluación (`evaluationCycleId`)**: Cada intento de evaluación de prop firm posee un identificador inmutable (`evaluationCycleId`, ej. `"eval_apex_50k_v1"`). Al reiniciar un reto o pasar de fase, se asigna un nuevo `evaluationCycleId`. La cláusula `pg_catalog.coalesce(evaluation_cycle_id, '') = pg_catalog.coalesce(p_evaluation_cycle_id, '')` impide que la nueva evaluación herede picos alcanzados en el reto anterior.
+   - **Monotonicidad Irreversible**: `GREATEST(COALESCE(peak_equity, 0), p_new_peak)` garantiza que el pico nunca decrezca, incluso si llega una actualización distribuida con timestamp posterior pero con un valor inferior.
+   - **Aislamiento por Ciclo de Evaluación (`evaluationCycleId`)**: Cada intento de evaluación de prop firm posee un identificador inmutable (`evaluationCycleId`, ej. `"eval_apex_50k_v1"`). Al reiniciar un reto o pasar de fase, se asigna un nuevo `evaluationCycleId`. La cláusula `COALESCE(evaluation_cycle_id, '') = COALESCE(p_evaluation_cycle_id, '')` impide que la nueva evaluación herede picos alcanzados en el reto anterior.
    - **Verificación Estricta de Titularidad (RLS)**: La condición `user_id = (SELECT auth.uid())` garantiza que solo el propietario autenticado de la cuenta pueda actualizar su pico.
 4. **Segregación de Métricas de Pico**:
    - `peakBalance`: Máximo balance realizado cerrado.
@@ -1183,14 +1193,27 @@ Para evitar heredar picos históricos entre evaluaciones y garantizar que ningun
 
 ### 5. Validación Rigurosa de Fuentes Externas (Binance y Feeds Públicos)
 
-Binance WebSocket y REST son servicios públicos que no requieren API Keys privadas. No obstante, **ninguna cotización externa carece de límites ni se inyecta directamente en los cálculos de riesgo sin una validación previa estricta**:
+Binance WebSocket y REST son servicios públicos que no requieren API Keys privadas. No obstante, **ninguna cotización externa carece de límites técnicos ni se inyecta directamente en los cálculos de riesgo sin una validación previa estricta**:
 
-1. **Límites Verificados del WebSocket Público de Binance**:
-   - Límite de **5 mensajes entrantes por segundo** por conexión.
-   - Máximo de **1,024 streams combinados** por conexión WebSocket.
-   - Límite de **300 intentos de conexión cada 5 minutos por dirección IP**.
-   - **Desconexión forzosa programada por Binance a las 24 horas continuas**. El cliente debe gestionar la reconexión automática sin pérdida de estado.
-   - Tramas de transporte `Ping/Pong` según RFC 6455 cada 3 minutos.
+1. **Límites Verificados del WebSocket de Binance (Separados por Producto)**:
+   - *Aclaración sobre Mensajes por Segundo*: El límite de mensajes entrantes se refiere estrictamente a **mensajes enviados desde el cliente hacia el servidor (upstream / client-to-server)**, como solicitudes JSON de suscripción/desuscripción (`{"method": "SUBSCRIBE", ...}`). **No aplica a los ticks de cotización emitidos por el exchange hacia el cliente (downstream)**, los cuales pueden superar decenas o cientos de eventos por segundo sin restricción.
+   - **Binance Spot WebSocket (`wss://stream.binance.com:9443/ws`)**:
+     - Upstream: máximo **5 mensajes del cliente por segundo** por conexión.
+     - Streams: máximo de **1,024 streams combinados** por conexión.
+     - Conexiones: límite de **300 intentos de conexión cada 5 minutos por dirección IP**.
+     - Desconexión forzosa: Binance desconecta forzosamente cualquier socket a las **24 horas continuas**.
+   - **Binance USD-M Futures WebSocket (`wss://fstream.binance.com/ws`)**:
+     - Pool y endpoint completamente independientes de Spot.
+     - Upstream: máximo **5 mensajes del cliente por segundo** por conexión.
+     - Streams: máximo de **200 streams** por conexión pública combinada.
+     - Conexiones: límite de **300 intentos de conexión cada 5 minutos por IP**.
+     - Desconexión forzosa: corte obligatorio a las **24 horas continuas**.
+     - Heartbeat RFC 6455: el servidor envía tramas `Ping` cada 3 minutos; el navegador responde con `Pong` automáticamente. Si no hay actividad en 10 minutos, el servidor aborta el socket.
+   - **Binance Coin-M Futures WebSocket (`wss://dstream.binance.com/ws`)**:
+     - Endpoint y pool de cuotas aislado de Spot y USD-M.
+     - Upstream: máximo **5 mensajes del cliente por segundo** por socket.
+     - Desconexión forzosa: corte obligatorio a las **24 horas continuas**.
+     - Heartbeat RFC 6455: tramas `Ping/Pong` cada 3 minutos.
 2. **Diferenciación entre `bookTicker` y Flujos de Volumen**:
    - El stream `<symbol>@bookTicker` proporciona exclusivamente: mejor precio de compra (`bidPrice`), cantidad en compra (`bidQty`), mejor precio de venta (`askPrice`) y cantidad en venta (`askQty`). **No incluye volumen negociado en 24h ni volumen de velas**.
    - Para aplicar filtros de picos basados en volumen, se documenta la necesidad de suscribir un stream adicional: `<symbol>@ticker` (resumen 24h con volumen total) o `<symbol>@trade` / `<symbol>@aggTrade` (flujo de operaciones ejecutadas con tamaño real).
