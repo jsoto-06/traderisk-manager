@@ -1,5 +1,5 @@
 // =============================================================================
-// TradeRisk Manager — Prop Firm Challenge Simulator
+// TradeRisk Manager — Prop Firm Challenge Simulator (Fase 5.1)
 // =============================================================================
 
 import type {
@@ -11,18 +11,23 @@ import type {
 import { createMulberry32, calculatePercentile, buildHistogramBins } from '../analytics/monte-carlo';
 
 /**
- * Simulates proprietary trading firm challenges (FTMO, Topstep, Apex, etc.)
- * under realistic conditions, multi-rule drawdowns, and daily loss enforcement.
+ * Simulates proprietary trading firm challenges under realistic quantitative conditions,
+ * supporting static vs. trailing drawdown models, daily loss enforcement (hard breach vs. soft pause),
+ * and commission friction.
  *
  * Drawdown Types:
  * - 'static': Stop-out line never moves from initial floor: Capital * (1 - DD%).
- * - 'trailing_balance': Moves up with end-of-day/trade balance peaks: PeakBalance - DD_Amount.
+ * - 'trailing_balance': Moves up with closed balance peaks: PeakBalance - DD_Amount.
  * - 'trailing_equity': Follows continuous high-water mark.
  * - 'trailing_hwm_lock': Trails peak until it locks permanently at initial capital.
  *
  * Daily Loss Types:
  * - 'balance_based': Evaluated against starting balance of the trading day.
- * - 'equity_based': Evaluated against intraday peak or day start equity.
+ * - 'equity_based': Evaluated against intraday peak.
+ *
+ * Daily Loss Enforcement:
+ * - 'hard_breach': Violating daily loss limit immediately terminates and fails the challenge.
+ * - 'soft_pause': Violating daily loss halts trading for the remainder of that day, resuming next session.
  */
 export function simulatePropFirmChallenge(
   config: PropFirmSimulatorConfig,
@@ -38,6 +43,7 @@ export function simulatePropFirmChallenge(
   const maxDrawdownAmount = Number((initialCapital * (config.maxDrawdownPercent / 100)).toFixed(2));
   const tradesPerDay = Math.max(1, Math.min(20, config.tradesPerDay || 3));
   const maxDays = Math.max(5, Math.min(365, config.maxDays || 60));
+  const dailyEnforcement = config.dailyLossEnforcement || 'hard_breach';
   const payoffRatio =
     config.averageLoss > 0
       ? Number((config.averageWin / config.averageLoss).toFixed(3))
@@ -65,15 +71,16 @@ export function simulatePropFirmChallenge(
     let maxDrawdownFloor = initialCapital - maxDrawdownAmount;
 
     let passed = false;
-    let breachedDaily = false;
+    let breachedDailyHard = false;
     let breachedMaxDd = false;
+    let experiencedDailyLoss = false;
     let finishDay = maxDays;
 
     const trajectory: number[] = [initialCapital];
     dayStepValues[0].push(initialCapital);
 
     for (let day = 1; day <= maxDays; day++) {
-      if (passed || breachedDaily || breachedMaxDd) {
+      if (passed || breachedDailyHard || breachedMaxDd) {
         trajectory.push(currentBalance);
         dayStepValues[day].push(currentBalance);
         continue;
@@ -106,7 +113,7 @@ export function simulatePropFirmChallenge(
           maxDrawdownFloor = trailingFloor >= initialCapital ? initialCapital : trailingFloor;
         }
 
-        // Check Max Drawdown breach
+        // Check Max Drawdown breach (applies immediately)
         if (currentBalance <= maxDrawdownFloor) {
           breachedMaxDd = true;
           break;
@@ -119,8 +126,14 @@ export function simulatePropFirmChallenge(
             : dayStartBalance - currentBalance;
 
         if (currentDailyLoss >= dailyLossLimitAmount) {
-          breachedDaily = true;
-          break;
+          experiencedDailyLoss = true;
+          if (dailyEnforcement === 'hard_breach') {
+            breachedDailyHard = true;
+            break;
+          } else {
+            // soft_pause: halt trading for today and resume next session
+            break;
+          }
         }
 
         // Check Target reached
@@ -134,10 +147,12 @@ export function simulatePropFirmChallenge(
       trajectory.push(currentBalance);
       dayStepValues[day].push(currentBalance);
 
-      if (passed || breachedDaily || breachedMaxDd) {
+      if (passed || breachedDailyHard || breachedMaxDd) {
         finishDay = day;
       }
     }
+
+    const failed = breachedDailyHard || breachedMaxDd;
 
     if (passed) {
       passCount++;
@@ -145,10 +160,11 @@ export function simulatePropFirmChallenge(
       if (passedTrajectories.length < 2) {
         passedTrajectories.push(trajectory);
       }
-    } else if (breachedDaily || breachedMaxDd) {
+    } else if (failed) {
       failCount++;
-      if (breachedDaily && breachedMaxDd) bothBreachedCount++;
-      else if (breachedDaily) dailyLossBreachCount++;
+      const dlBreached = breachedDailyHard || experiencedDailyLoss;
+      if (dlBreached && breachedMaxDd) bothBreachedCount++;
+      else if (dlBreached) dailyLossBreachCount++;
       else if (breachedMaxDd) maxDrawdownBreachCount++;
 
       if (failedTrajectories.length < 2) {

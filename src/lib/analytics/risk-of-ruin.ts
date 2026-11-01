@@ -1,22 +1,23 @@
 // =============================================================================
-// TradeRisk Manager — Risk of Ruin & Kelly Criterion Module
+// TradeRisk Manager — Risk of Ruin & Kelly Criterion Module (Fase 5.1)
 // =============================================================================
 
 import type {
   RiskOfRuinConfig,
   RiskOfRuinResult,
   RiskScenarioComparison,
+  KellySensitivity,
 } from './types';
 import { createMulberry32 } from './monte-carlo';
 
 /**
- * Calculates analytical and empirical Risk of Ruin, Kelly Criterion fractions,
- * and sensitivity scenarios across different risk-per-trade levels.
+ * Calculates asymptotic (T -> inf) and finite horizon (T trades) Risk of Ruin,
+ * Kelly Criterion fractions, Kelly sensitivity analysis, and multi-tier risk scenarios.
  *
  * References:
  * - Ralph Vince: "The Mathematics of Money Management"
  * - Perry Belmont: Analytical advantage formula: A = (W*R - L) / (W*R + L)
- * - J. L. Kelly Jr.: "A New Interpretation of Information Rate"
+ * - J. L. Kelly Jr.: "A New Interpretation of Information Rate" (1956)
  */
 export function calculateRiskOfRuin(config: RiskOfRuinConfig): RiskOfRuinResult {
   const initialCapital = Math.max(100, config.initialCapital || 10000);
@@ -25,7 +26,7 @@ export function calculateRiskOfRuin(config: RiskOfRuinConfig): RiskOfRuinResult 
   const averageLoss = Math.max(0.01, config.averageLoss);
   const riskPerTradePercent = Math.max(0.05, Math.min(50, config.riskPerTradePercent));
   const maxLossLimitPercent = Math.max(1, Math.min(100, config.maxLossLimitPercent));
-  const tradesHorizon = Math.max(20, Math.min(1000, config.tradesHorizon || 200));
+  const tradesHorizon = Math.max(10, Math.min(2000, config.tradesHorizon || 200));
 
   const W = winRate / 100;
   const L = 1 - W;
@@ -44,17 +45,36 @@ export function calculateRiskOfRuin(config: RiskOfRuinConfig): RiskOfRuinResult 
   // e.g. 10% limit with 1% risk = 10 units
   const riskUnits = Number((maxLossLimitPercent / riskPerTradePercent).toFixed(2));
 
-  // Closed-form analytical Risk of Ruin
-  let analyticalRuinProbability = 100;
+  // 1. Asymptotic Risk of Ruin (T -> infinity)
+  // Vince / Belmont closed form: RoR = ((1 - A) / (1 + A))^U
+  let asymptoticRuinProbability = 100;
   if (advantage > 0) {
     const ratio = (1 - advantage) / (1 + advantage);
-    analyticalRuinProbability = Number((Math.pow(ratio, riskUnits) * 100).toFixed(2));
-    analyticalRuinProbability = Math.max(0, Math.min(100, analyticalRuinProbability));
+    asymptoticRuinProbability = Number((Math.pow(ratio, riskUnits) * 100).toFixed(2));
+    asymptoticRuinProbability = Math.max(0, Math.min(100, asymptoticRuinProbability));
   } else {
-    analyticalRuinProbability = 100;
+    // Over an infinite sequence of trades with negative or zero advantage, ruin is mathematically certain (100%)
+    asymptoticRuinProbability = 100;
   }
 
-  // Kelly Criterion: K = (W * (R + 1) - 1) / R
+  // 2. Finite Horizon Risk of Ruin (T trades)
+  // Evaluated via 2,000 deterministic Monte Carlo paths over the specific tradesHorizon
+  const empiricalSimulation = simulateEmpiricalRuin({
+    initialCapital,
+    winRate,
+    payoffRatio,
+    riskPercent: riskPerTradePercent,
+    maxLossPercent: maxLossLimitPercent,
+    tradesCount: tradesHorizon,
+    simulationsCount: 2000,
+    seed: config.seed ?? 101,
+  });
+
+  const finiteHorizonRuinProbability = empiricalSimulation.ruinProbability;
+  const empiricalRuinProbability = finiteHorizonRuinProbability;
+
+  // 3. Kelly Criterion & Sensitivity Analysis
+  // K = (W * (R + 1) - 1) / R
   let fullKelly = 0;
   if (payoffRatio > 0) {
     const k = (W * (payoffRatio + 1) - 1) / payoffRatio;
@@ -63,13 +83,36 @@ export function calculateRiskOfRuin(config: RiskOfRuinConfig): RiskOfRuinResult 
   const halfKelly = Number((fullKelly / 2).toFixed(2));
   const quarterKelly = Number((fullKelly / 4).toFixed(2));
 
+  // Kelly Sensitivities:
+  // dK / dW = 1 + 1/R
+  const sensitivityToWinRate = Number((1 + 1 / payoffRatio).toFixed(3));
+  // dK / dR = (1 - W) / R^2
+  const sensitivityToPayoff = Number(((1 - W) / Math.pow(payoffRatio, 2)).toFixed(3));
+
+  // Stressed / Conservative Kelly scenario:
+  // Stressed Win Rate (conservative -5% absolute)
+  const stressedW = Math.max(0, W - 0.05);
+  // Stressed Payoff Ratio (-15% relative degradation due to slippage/spread)
+  const stressedR = Math.max(0.1, payoffRatio * 0.85);
+  let stressedKelly = 0;
+  if (stressedR > 0) {
+    const kStressed = (stressedW * (stressedR + 1) - 1) / stressedR;
+    stressedKelly = Number((Math.max(0, kStressed) * 100).toFixed(2));
+  }
+
+  const kellySensitivity: KellySensitivity = {
+    sensitivityToWinRate,
+    sensitivityToPayoff,
+    stressedKellyPercent: stressedKelly,
+    stressedWinRate: Number((stressedW * 100).toFixed(1)),
+    stressedPayoffRatio: Number(stressedR.toFixed(2)),
+  };
+
   // Recovery probability from a 50% drawdown
-  // To recover from 50% drawdown, equity must double (100% gain).
+  // To recover from a 50% drawdown, equity must double (+100% gain).
   let recoveryProbability50Pct = 0;
   if (advantage > 0) {
     const ratio = (1 - advantage) / (1 + advantage);
-    // Gambler's ruin probability of reaching 2x before 0x starting at 1x
-    // P = (1 - ratio^U) / (1 - ratio^(2U)) with U units of risk
     const uRecovery = 50 / riskPerTradePercent;
     const rU = Math.pow(ratio, uRecovery);
     const r2U = Math.pow(ratio, 2 * uRecovery);
@@ -81,18 +124,6 @@ export function calculateRiskOfRuin(config: RiskOfRuinConfig): RiskOfRuinResult 
   } else {
     recoveryProbability50Pct = 0;
   }
-
-  // Empirical Monte Carlo validation for the current config
-  const empiricalRuinProbability = simulateEmpiricalRuin({
-    initialCapital,
-    winRate,
-    payoffRatio,
-    riskPercent: riskPerTradePercent,
-    maxLossPercent: maxLossLimitPercent,
-    tradesCount: tradesHorizon,
-    simulationsCount: 1000,
-    seed: config.seed ?? 101,
-  });
 
   // Risk sensitivity scenarios table (0.25%, 0.5%, 1.0%, 1.5%, 2.0%, 3.0%)
   const standardRiskLevels = [0.25, 0.5, 1.0, 1.5, 2.0, 3.0];
@@ -112,11 +143,10 @@ export function calculateRiskOfRuin(config: RiskOfRuinConfig): RiskOfRuinResult 
       riskPercent: riskPct,
       maxLossPercent: maxLossLimitPercent,
       tradesCount: tradesHorizon,
-      simulationsCount: 500,
-      seed: (config.seed ?? 101) + idx * 7,
+      simulationsCount: 1000,
+      seed: (config.seed ?? 101) + (idx + 1) * 13,
     });
 
-    // Approximate expected final return & max drawdown for this risk tier
     const expectedReturn = Number(
       ((tradesHorizon * (W * payoffRatio - L) * riskPct)).toFixed(1),
     );
@@ -139,13 +169,21 @@ export function calculateRiskOfRuin(config: RiskOfRuinConfig): RiskOfRuinResult 
     return {
       riskPercent: riskPct,
       formulaRuinPercent: formulaRuin,
-      empiricalRuinPercent: empirical,
+      empiricalRuinPercent: empirical.ruinProbability,
       expectedFinalReturnPercent: expectedReturn,
       expectedMaxDrawdownPercent: expectedMaxDd,
       isRecommended,
       riskTag,
     };
   });
+
+  const hypothesesAndLimits = [
+    'Independencia e idéntica distribución (I.I.D.): Las fórmulas asumen ausencia de autocorrelación serial entre operaciones consecutivas.',
+    'Horizonte Asintótico vs. Finito: La fórmula cerrada de Ralph Vince / Belmont modela el límite cuando T -> infinito; para un horizonte finito T, la probabilidad empírica de ruina es significativamente inferior.',
+    'Criterio de Kelly Teórico: Maximiza la tasa de crecimiento asintótico geométrico del capital, pero conlleva una volatilidad severa (drawdowns de hasta 50%-80%). En la gestión cuantitativa real se recomienda utilizar Half o Quarter Kelly.',
+    'Sensibilidad de Parámetros: Pequeñas variaciones muestrales en el Win Rate o Payoff Ratio modifican de forma desproporcionada la fracción óptima de Kelly.',
+    'Estacionariedad de Régimen: Los modelos asumen constancia en las condiciones de mercado; no contemplan cisnes negros fuera de la muestra histórica.',
+  ];
 
   return {
     initialCapital,
@@ -154,7 +192,9 @@ export function calculateRiskOfRuin(config: RiskOfRuinConfig): RiskOfRuinResult 
     edgePercent,
     advantage,
     riskUnits,
-    analyticalRuinProbability,
+    analyticalRuinProbability: asymptoticRuinProbability, // preserved for backward-compatibility
+    asymptoticRuinProbability,
+    finiteHorizonRuinProbability,
     empiricalRuinProbability,
     scenarios,
     kellyCriterion: {
@@ -162,7 +202,9 @@ export function calculateRiskOfRuin(config: RiskOfRuinConfig): RiskOfRuinResult 
       halfKellyPercent: halfKelly,
       quarterKellyPercent: quarterKelly,
     },
+    kellySensitivity,
     recoveryProbability50Pct,
+    hypothesesAndLimits,
   };
 }
 
@@ -177,10 +219,16 @@ interface EmpiricalSimParams {
   seed: number;
 }
 
-function simulateEmpiricalRuin(params: EmpiricalSimParams): number {
+interface EmpiricalSimOutput {
+  ruinProbability: number;
+  lossProbability: number;
+}
+
+function simulateEmpiricalRuin(params: EmpiricalSimParams): EmpiricalSimOutput {
   const prng = createMulberry32(params.seed);
   const ruinThreshold = params.initialCapital * (1 - params.maxLossPercent / 100);
   let ruinedCount = 0;
+  let endingLossCount = 0;
 
   for (let s = 0; s < params.simulationsCount; s++) {
     let balance = params.initialCapital;
@@ -203,7 +251,11 @@ function simulateEmpiricalRuin(params: EmpiricalSimParams): number {
     }
 
     if (ruined) ruinedCount++;
+    if (balance < params.initialCapital) endingLossCount++;
   }
 
-  return Number(((ruinedCount / params.simulationsCount) * 100).toFixed(2));
+  return {
+    ruinProbability: Number(((ruinedCount / params.simulationsCount) * 100).toFixed(2)),
+    lossProbability: Number(((endingLossCount / params.simulationsCount) * 100).toFixed(2)),
+  };
 }

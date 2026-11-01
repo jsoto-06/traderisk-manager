@@ -20,6 +20,7 @@ import type {
   PropFirmSimulatorResult,
   PropFirmDrawdownType,
   PropFirmDailyLossType,
+  PropFirmDailyLossEnforcement,
 } from '@/lib/analytics/types';
 import { Card } from '@/components/ui/Card';
 import { StatCard } from '@/components/ui/StatCard';
@@ -59,6 +60,8 @@ export default function PropFirmSimulatorPage() {
     activeAccount?.drawdownType === 'trailing' ? 'trailing_balance' : 'static',
   );
   const [dailyLossType, setDailyLossType] = useState<PropFirmDailyLossType>('balance_based');
+  const [dailyLossEnforcement, setDailyLossEnforcement] =
+    useState<PropFirmDailyLossEnforcement>('hard_breach');
   const [riskPerTradePercent, setRiskPerTradePercent] = useState<number>(
     activeAccount?.riskPerTrade || 0.5,
   );
@@ -80,6 +83,7 @@ export default function PropFirmSimulatorPage() {
       maxDrawdownPercent: activeAccount?.maxDrawdown || 8,
       drawdownType: activeAccount?.drawdownType === 'trailing' ? 'trailing_balance' : 'static',
       dailyLossType: 'balance_based',
+      dailyLossEnforcement: 'hard_breach',
       resetHour: 0,
       resetTimezone: 'UTC',
       winRate: 55,
@@ -108,6 +112,7 @@ export default function PropFirmSimulatorPage() {
         maxDrawdownPercent: Number(maxDrawdownPercent) || 8,
         drawdownType,
         dailyLossType,
+        dailyLossEnforcement,
         resetHour: 0,
         resetTimezone: 'UTC',
         winRate: Number(winRate) || 50,
@@ -217,6 +222,18 @@ export default function PropFirmSimulatorPage() {
             options={[
               { value: 'balance_based', label: t.propFirm.dailyBalanceBased },
               { value: 'equity_based', label: t.propFirm.dailyEquityBased },
+            ]}
+          />
+
+          <Select
+            label={t.propFirm.enforcement}
+            value={dailyLossEnforcement}
+            onChange={(e) =>
+              setDailyLossEnforcement(e.target.value as PropFirmDailyLossEnforcement)
+            }
+            options={[
+              { value: 'hard_breach', label: t.propFirm.enforceHardBreach },
+              { value: 'soft_pause', label: t.propFirm.enforceSoftPause },
             ]}
           />
 

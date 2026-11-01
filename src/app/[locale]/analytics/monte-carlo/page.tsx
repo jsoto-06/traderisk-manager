@@ -10,11 +10,12 @@ import {
   ShieldAlert,
   DollarSign,
   Sliders,
+  BarChart3,
 } from 'lucide-react';
 import { useLocale } from '@/lib/i18n/useLocale';
 import { useStorage } from '@/hooks/useStorage';
 import { runMonteCarloSimulation } from '@/lib/analytics/monte-carlo';
-import type { MonteCarloConfig, MonteCarloResult } from '@/lib/analytics/types';
+import type { MonteCarloConfig, MonteCarloResult, MonteCarloMethod } from '@/lib/analytics/types';
 import { formatCurrency } from '@/lib/i18n';
 import { Card } from '@/components/ui/Card';
 import { StatCard } from '@/components/ui/StatCard';
@@ -51,6 +52,10 @@ export default function MonteCarloPage() {
   const [dataSource, setDataSource] = useState<'historical' | 'custom'>(
     hasHistorical ? 'historical' : 'custom',
   );
+  const [method, setMethod] = useState<MonteCarloMethod>(
+    hasHistorical ? 'bootstrap_block' : 'parametric_fixed',
+  );
+  const [blockSize, setBlockSize] = useState<number>(5);
   const [simulationsCount, setSimulationsCount] = useState<number>(1000);
   const [tradesCount, setTradesCount] = useState<number>(100);
   const [riskType, setRiskType] = useState<'fixed_amount' | 'percentage_equity'>('percentage_equity');
@@ -65,6 +70,8 @@ export default function MonteCarloPage() {
   const [customWinRate, setCustomWinRate] = useState<number>(55);
   const [customAvgWin, setCustomAvgWin] = useState<number>(200);
   const [customAvgLoss, setCustomAvgLoss] = useState<number>(100);
+  const [customWinStdDev, setCustomWinStdDev] = useState<number>(50);
+  const [customLossStdDev, setCustomLossStdDev] = useState<number>(25);
 
   // Simulation execution & result state
   const [result, setResult] = useState<MonteCarloResult>(() => {
@@ -77,6 +84,8 @@ export default function MonteCarloPage() {
       profitTarget: Math.round(initialCapital * 1.15),
       maxDrawdownLimitPercent: 10,
       seed: 42,
+      method: hasHistorical ? 'bootstrap_block' : 'parametric_fixed',
+      blockSize: 5,
       customDistribution: hasHistorical
         ? undefined
         : {
@@ -103,12 +112,16 @@ export default function MonteCarloPage() {
         profitTarget: profitTarget ? Number(profitTarget) : undefined,
         maxDrawdownLimitPercent: Number(maxDrawdownLimit) || 10,
         seed: Number(seed) || 42,
+        method,
+        blockSize: Number(blockSize) || 5,
         customDistribution:
-          dataSource === 'custom'
+          dataSource === 'custom' || method.startsWith('parametric')
             ? {
                 winRate: Number(customWinRate) || 50,
                 averageWin: Number(customAvgWin) || 200,
                 averageLoss: Number(customAvgLoss) || 100,
+                winStdDev: method === 'parametric_variable' ? Number(customWinStdDev) || 0 : undefined,
+                lossStdDev: method === 'parametric_variable' ? Number(customLossStdDev) || 0 : undefined,
               }
             : undefined,
       };
@@ -161,7 +174,15 @@ export default function MonteCarloPage() {
           <Select
             label={t.monteCarlo.dataSource}
             value={dataSource}
-            onChange={(e) => setDataSource(e.target.value as 'historical' | 'custom')}
+            onChange={(e) => {
+              const ds = e.target.value as 'historical' | 'custom';
+              setDataSource(ds);
+              if (ds === 'historical') {
+                setMethod('bootstrap_block');
+              } else {
+                setMethod('parametric_fixed');
+              }
+            }}
             options={[
               {
                 value: 'historical',
@@ -172,16 +193,44 @@ export default function MonteCarloPage() {
           />
 
           <Select
-            label={t.monteCarlo.simulationsCount}
-            value={String(simulationsCount)}
-            onChange={(e) => setSimulationsCount(Number(e.target.value))}
-            options={[
-              { value: '200', label: '200 iteraciones' },
-              { value: '500', label: '500 iteraciones' },
-              { value: '1000', label: '1,000 iteraciones' },
-              { value: '2000', label: '2,000 iteraciones' },
-            ]}
+            label={t.monteCarlo.method}
+            value={method}
+            onChange={(e) => setMethod(e.target.value as MonteCarloMethod)}
+            options={
+              dataSource === 'historical'
+                ? [
+                    { value: 'bootstrap_block', label: t.monteCarlo.methodBlock },
+                    { value: 'bootstrap_iid', label: t.monteCarlo.methodIid },
+                  ]
+                : [
+                    { value: 'parametric_fixed', label: t.monteCarlo.methodParamFixed },
+                    { value: 'parametric_variable', label: t.monteCarlo.methodParamVariable },
+                  ]
+            }
           />
+
+          {method === 'bootstrap_block' ? (
+            <Input
+              label={t.monteCarlo.blockSize}
+              type="number"
+              min={1}
+              max={50}
+              value={blockSize}
+              onChange={(e) => setBlockSize(Number(e.target.value))}
+            />
+          ) : (
+            <Select
+              label={t.monteCarlo.simulationsCount}
+              value={String(simulationsCount)}
+              onChange={(e) => setSimulationsCount(Number(e.target.value))}
+              options={[
+                { value: '200', label: '200 iteraciones' },
+                { value: '500', label: '500 iteraciones' },
+                { value: '1000', label: '1,000 iteraciones' },
+                { value: '2000', label: '2,000 iteraciones' },
+              ]}
+            />
+          )}
 
           <Select
             label={t.monteCarlo.tradesHorizon}
@@ -195,6 +244,20 @@ export default function MonteCarloPage() {
               { value: '500', label: '500 operaciones' },
             ]}
           />
+
+          {method === 'bootstrap_block' && (
+            <Select
+              label={t.monteCarlo.simulationsCount}
+              value={String(simulationsCount)}
+              onChange={(e) => setSimulationsCount(Number(e.target.value))}
+              options={[
+                { value: '200', label: '200 iteraciones' },
+                { value: '500', label: '500 iteraciones' },
+                { value: '1000', label: '1,000 iteraciones' },
+                { value: '2000', label: '2,000 iteraciones' },
+              ]}
+            />
+          )}
 
           <Select
             label={t.monteCarlo.riskModel}
@@ -239,8 +302,8 @@ export default function MonteCarloPage() {
         </div>
 
         {/* Custom Theoretical Distribution Inputs (if selected) */}
-        {dataSource === 'custom' && (
-          <div className="mt-4 pt-4 border-t border-[#1E2D4A] grid grid-cols-1 sm:grid-cols-3 gap-4">
+        {(dataSource === 'custom' || method.startsWith('parametric')) && (
+          <div className="mt-4 pt-4 border-t border-[#1E2D4A] grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <Input
               label={t.monteCarlo.winRateCustom}
               type="number"
@@ -261,9 +324,99 @@ export default function MonteCarloPage() {
               value={customAvgLoss}
               onChange={(e) => setCustomAvgLoss(Number(e.target.value))}
             />
+            {method === 'parametric_variable' && (
+              <>
+                <Input
+                  label={t.monteCarlo.winStdDev}
+                  type="number"
+                  value={customWinStdDev}
+                  onChange={(e) => setCustomWinStdDev(Number(e.target.value))}
+                />
+                <Input
+                  label={t.monteCarlo.lossStdDev}
+                  type="number"
+                  value={customLossStdDev}
+                  onChange={(e) => setCustomLossStdDev(Number(e.target.value))}
+                />
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Metadata info badge bar */}
+        {result.metadata && (
+          <div className="mt-4 pt-3 border-t border-[#1E2D4A]/60 flex flex-wrap items-center gap-3 text-xs text-[#8899A6]">
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#1E2D4A] text-[#00F0FF] font-mono">
+              Engine v{result.metadata.algorithmVersion}
+            </span>
+            <span>
+              Método: <strong className="text-[#F5F7FA] font-mono">{result.metadata.method}</strong>
+            </span>
+            {result.metadata.blockSize && (
+              <span>
+                Bloque: <strong className="text-[#F5F7FA]">{result.metadata.blockSize} trades</strong>
+              </span>
+            )}
+            <span>
+              Semilla: <strong className="text-[#F5F7FA] font-mono">{result.metadata.seed}</strong>
+            </span>
+            <span>
+              Iteraciones: <strong className="text-[#F5F7FA]">{result.metadata.simulationsCount}</strong>
+            </span>
+            <span>
+              Horizonte: <strong className="text-[#F5F7FA]">{result.metadata.tradesCount} trades</strong>
+            </span>
           </div>
         )}
       </Card>
+
+      {/* Empirical Sample Statistics Card (if available) */}
+      {result.empiricalStatistics && (
+        <Card className="p-5 bg-[#111C35] border border-[#1E2D4A]">
+          <div className="flex items-center gap-2 mb-3 text-xs font-semibold uppercase tracking-wider text-[#00F0FF]">
+            <BarChart3 className="w-4 h-4" />
+            {t.monteCarlo.statsTitle} (n = {result.empiricalStatistics.historicalTradesCount} trades)
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+            <div className="p-3 bg-[#0A1128] rounded border border-[#1E2D4A]/60">
+              <span className="text-[11px] text-[#8899A6] block">Media (R)</span>
+              <span className="text-sm font-bold text-[#F5F7FA] font-mono">
+                {result.empiricalStatistics.mean.toFixed(2)}R
+              </span>
+            </div>
+            <div className="p-3 bg-[#0A1128] rounded border border-[#1E2D4A]/60">
+              <span className="text-[11px] text-[#8899A6] block">{t.monteCarlo.stdDev} (R)</span>
+              <span className="text-sm font-bold text-[#F5F7FA] font-mono">
+                {result.empiricalStatistics.stdDev.toFixed(2)}R
+              </span>
+            </div>
+            <div className="p-3 bg-[#0A1128] rounded border border-[#1E2D4A]/60">
+              <span className="text-[11px] text-[#8899A6] block">{t.monteCarlo.skewness}</span>
+              <span className={`text-sm font-bold font-mono ${result.empiricalStatistics.skewness >= 0 ? 'text-[#10B981]' : 'text-[#EF4444]'}`}>
+                {result.empiricalStatistics.skewness.toFixed(2)}
+              </span>
+            </div>
+            <div className="p-3 bg-[#0A1128] rounded border border-[#1E2D4A]/60">
+              <span className="text-[11px] text-[#8899A6] block">{t.monteCarlo.kurtosis}</span>
+              <span className="text-sm font-bold text-[#F5F7FA] font-mono">
+                {result.empiricalStatistics.excessKurtosis.toFixed(2)}
+              </span>
+            </div>
+            <div className="p-3 bg-[#0A1128] rounded border border-[#1E2D4A]/60">
+              <span className="text-[11px] text-[#8899A6] block">{t.monteCarlo.var95}</span>
+              <span className="text-sm font-bold text-[#EF4444] font-mono">
+                {result.empiricalStatistics.valueAtRisk95.toFixed(2)}R
+              </span>
+            </div>
+            <div className="p-3 bg-[#0A1128] rounded border border-[#1E2D4A]/60">
+              <span className="text-[11px] text-[#8899A6] block">Max DD Histórico</span>
+              <span className="text-sm font-bold text-[#EF4444] font-mono">
+                {result.empiricalStatistics.maxHistoricalDrawdown.toFixed(1)}R
+              </span>
+            </div>
+          </div>
+        </Card>
+      )}
 
       {/* KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

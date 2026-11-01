@@ -613,15 +613,73 @@ En la Fase 5 se implementó un motor analítico y estocástico institucional par
 
 ---
 
-## 16. Fase 5.1: Auditoría Matemática, Estadística y Validación del Motor Monte Carlo (Iniciada)
+## 16. Fase 5.1: Auditoría Matemática, Estadística y Validación del Motor Monte Carlo (Completada)
 
-En la Fase 5.1 se auditan los supuestos estadísticos y formulaciones de la Fase 5:
-- Incorporación de Block Bootstrap para modelado de dependencias temporales y clustering de rachas.
-- Modelo paramétrico con dispersión estadística real (desviación estándar, asimetría, curtosis y colas de pérdidas).
-- Distinción rigurosa entre Ruina Asintótica ($T \to \infty$) y Ruina a Horizonte Finito ($T$ trades).
-- Auditoría del Criterio de Kelly con análisis de sensibilidad a errores de estimación y escenario de estrés conservador.
-- Metadatos estocásticos deterministas en simulaciones (semilla, versión del algoritmo, método, timestamp).
-- Conjunto de benchmarks manuales con 15+ escenarios calculados matemáticamente.
+En la Fase 5.1 se realizó una auditoría cuantitativa integral sobre las hipótesis matemáticas y los algoritmos estocásticos de la aplicación, eliminando simplificaciones indebidas, incorporando dependencia temporal y formalizando benchmarks verificables.
+
+### 1. Auditoría del Bootstrap y Preservación de Dependencias Temporales
+- **Block Bootstrap (Circular Moving Block)**: Se incorporó junto con el muestreo I.I.D. simple para preservar la autocorrelación de retornos y el agrupamiento de rachas perdedoras (*volatility / loss clustering*).
+- **Parámetro `blockSize`**: Configurable en interfaz y API (por defecto $B = 5$ operaciones). Manejo circular de índices en bordes para garantizar igual probabilidad de muestreo.
+- **Selector de Método Estocástico**: La API y UI permiten seleccionar explícitamente:
+  1. `bootstrap_block`: Circular Moving Block Bootstrap sobre operaciones reales.
+  2. `bootstrap_iid`: Remuestreo aleatorio independiente con reemplazo.
+  3. `parametric_fixed`: Modelo paramétrico de dos estados (Bernoulli).
+  4. `parametric_variable`: Modelo paramétrico continuo con dispersión log-normal / gaussiana mediante transformación Box-Muller.
+
+### 2. Momentos Estadísticos Empíricos y Métricas de Cola
+- **Función `calculateSampleStatistics(rMultiples)`**:
+  - Media de múltiplos de riesgo: $\mu_R = \frac{1}{n} \sum R_i$.
+  - Desviación estándar muestral: $\sigma_R = \sqrt{\frac{1}{n-1} \sum (R_i - \mu_R)^2}$.
+  - Coeficiente de Asimetría (Fisher-Pearson Skewness): $g_1 = \frac{n}{(n-1)(n-2)} \sum \left(\frac{R_i - \mu_R}{\sigma_R}\right)^3$.
+  - Exceso de Curtosis Muestral: $g_2 = \frac{n(n+1)}{(n-1)(n-2)(n-3)} \sum \left(\frac{R_i - \mu_R}{\sigma_R}\right)^4 - \frac{3(n-1)^2}{(n-2)(n-3)}$.
+  - Value at Risk al 95% ($VaR_{95\%}$): Cuantil empírico del 5% de pérdidas peores expresado en R.
+  - Drawdown histórico máximo en unidades de riesgo R.
+
+### 3. Corrección Matemática del Riesgo de Ruina
+- **Desagregación Crítica**:
+  - *Ruina Asintótica ($T \to \infty$)*: Formulada mediante el modelo de Ralph Vince / Perry Belmont $\left(\frac{1-A}{1+A}\right)^U$. Si la ventaja $A \le 0$, el riesgo de ruina asintótica es estrictamente $100\%$.
+  - *Ruina a Horizonte Finito ($T$ operaciones)*: Se eliminó el error conceptual de devolver 100% de ruina para horizontes limitados. A $T = 25$ o $50$ operaciones, la probabilidad de alcanzar la barrera de pérdida tolerada es estrictamente menor al 100% (probabilidad de absorción en tiempo finito) y se computa mediante simulación empírica de barrera.
+- **Hipótesis y Límites Explícitos**: Se documentaron formalmente en la interfaz los supuestos del modelo: I.I.D. en formulación cerrada, asimetría de retornos reales, ausencia de colas infinitas y tamaño de muestra.
+
+### 4. Sensibilidad Formal y Escenario Estresado del Criterio de Kelly
+- **Derivadas Parciales Exactas**:
+  - Sensibilidad ante error en la tasa de acierto: $\frac{\partial K}{\partial W} = 1 + \frac{1}{R}$.
+  - Sensibilidad ante error en el ratio de pago: $\frac{\partial K}{\partial R} = \frac{1 - W}{R^2}$.
+- **Stressed Kelly (Kelly Conservador)**:
+  - Escenario que evalúa el apalancamiento degradando preventivamente el Win Rate en $-5\%$ y el Payoff Ratio en $-15\%$ ($R \times 0.85$).
+  - Previene la sobreexposición por sesgo de sobreoptimización muestral (*selection bias*).
+
+### 5. Control de Pérdida Diaria en Prop Firms: Hard Breach vs. Soft Pause
+- **Parámetro `dailyLossEnforcement`**:
+  - `hard_breach`: Cualquier vulneración del límite diario (por balance o equidad flotante) cancela de inmediato la cuenta del reto.
+  - `soft_pause`: La vulneración del límite diario suspende las operaciones durante el resto de la sesión de trading y se reanuda en el siguiente reinicio diario sin fallar la cuenta, a menos que se vulnere el drawdown máximo global.
+
+### 6. Suite de Benchmarks Cuantitativos (17 Escenarios Formales)
+- Archivo `src/__tests__/monte-carlo-quant-audit.test.ts` con 17 pruebas matemáticas exhaustivas:
+  1. *Rentabilidad con Ventaja Positiva*: $W=60\%$, $R=1.5$, $E = +0.50R$, crecimiento de capital comprobado.
+  2. *No Rentabilidad*: $W=40\%$, $R=1.0$, $E = -0.20R$, degradación sistemática de capital.
+  3. *High Win Rate / Low Payoff*: $W=80\%$, $R=0.5$, $E = +0.20R$, rentabilidad positiva.
+  4. *Low Win Rate / High Payoff*: $W=30\%$, $R=4.0$, $E = +0.50R$, estrategia de tendencia rentable.
+  5. *Breakeven Perfecto*: $W=50\%$, $R=1.0$, $E = 0.00R$, $A = 0$, Kelly $= 0\%$.
+  6. *Racha de Pérdidas Consecutivas*: Verificación de $P(k) = (1-W)^k$ y clustering.
+  7. *Riesgo Fijo ($)*: Caída estrictamente lineal ante racha perdedora ($C_k = C_0 - k \cdot \text{Riesgo}$).
+  8. *Riesgo Compuesto (% Equity)*: Caída geométrica $C_k = C_0 (1-f)^k$ y asimetría de recuperación $\text{Req} = \frac{DD}{1-DD}$ (+100% de subida tras -50% de caída).
+  9. *Determinismo Mulberry32*: Mismo seed produce secuencias idénticas bit a bit.
+  10. *Circular Moving Block Bootstrap*: Preservación de autocorrelación y momentos muestrales $\mu, \sigma, VaR_{95\%}$.
+  11. *Drawdown Estático*: Suelo de liquidación inmutable independientemente de beneficios acumulados.
+  12. *Trailing Drawdown sobre Balance*: El umbral sube con cada cresta y nunca baja.
+  13. *Trailing Drawdown con Lock-In*: Congelamiento del umbral en el capital inicial (Apex/Topstep).
+  14. *Hard Breach vs. Soft Pause*: Demostración cuantitativa de mayor tasa de supervivencia con pausa intradía.
+  15. *Ruina Finita vs. Asintótica*: Demostración de que con $A \le 0$, ruina asintótica es 100% pero ruina finita a 25 trades es $< 100\%$.
+  16. *Kelly con Ventaja No Positiva*: Retorno de $0\%$ exacto ante ventaja nula o negativa.
+  17. *Kelly Estresado y Sensibilidades*: Comprobación de derivadas $\frac{\partial K}{\partial W}$ y $\frac{\partial K}{\partial R}$ y dimensionamiento seguro bajo estrés.
+
+### 7. Estado del Proyecto tras la Fase 5.1
+- **184 tests unitarios y de auditoría aprobados** (19 archivos de test).
+- **6 tests de integración Supabase** omitidos condicionalmente a la espera de credenciales en vivo.
+- **0 errores de TypeScript (`npx tsc --noEmit`)**.
+- **0 errores y 0 advertencias de ESLint (`npm run lint`)**.
+- **Compilación de producción exitosa en Next.js 16.4.3 Turbopack (`npm run build`)**.
 
 ---
 

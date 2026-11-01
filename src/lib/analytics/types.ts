@@ -63,6 +63,12 @@ export interface AnalyticsFilter {
 // Monte Carlo Simulation Types
 // -----------------------------------------------------------------------------
 
+export type MonteCarloMethod =
+  | 'bootstrap_iid'
+  | 'bootstrap_block'
+  | 'parametric_fixed'
+  | 'parametric_variable';
+
 export interface MonteCarloConfig {
   simulationsCount: number; // e.g. 1000
   tradesCount: number; // Horizon: e.g. 50, 100, 200 trades
@@ -72,11 +78,17 @@ export interface MonteCarloConfig {
   profitTarget?: number; // Optional target equity or target gain
   maxDrawdownLimitPercent?: number; // e.g. 10%
   seed?: number; // For deterministic reproducible simulation
-  // Custom trade parameters if no historical trades exist
+  method?: MonteCarloMethod; // default: 'bootstrap_iid'
+  blockSize?: number; // for block bootstrap (default: 5)
+  // Custom trade parameters if no historical trades exist or for theoretical modeling
   customDistribution?: {
     winRate: number; // 0-100
     averageWin: number;
     averageLoss: number;
+    winStdDev?: number; // Optional dispersion of winning trades
+    lossStdDev?: number; // Optional dispersion of losing trades
+    skewness?: number; // Optional skewness
+    kurtosis?: number; // Optional kurtosis
   };
 }
 
@@ -95,6 +107,28 @@ export interface DistributionBin {
   binMax: number;
   count: number;
   percentage: number;
+}
+
+export interface MonteCarloMetadata {
+  seed: number;
+  algorithmVersion: string; // e.g. '5.1.0'
+  method: MonteCarloMethod;
+  simulationsCount: number;
+  tradesCount: number;
+  blockSize?: number;
+  riskType: 'fixed_amount' | 'percentage_equity';
+  riskValue: number;
+  timestamp: string;
+}
+
+export interface EmpiricalStatistics {
+  mean: number;
+  stdDev: number;
+  skewness: number;
+  excessKurtosis: number;
+  maxHistoricalDrawdown: number;
+  historicalTradesCount: number;
+  valueAtRisk95: number; // 5th percentile loss in R
 }
 
 export interface MonteCarloResult {
@@ -118,6 +152,8 @@ export interface MonteCarloResult {
   curves: MonteCarloCurvePoint[];
   finalEquityDistribution: DistributionBin[];
   disclaimer: string;
+  metadata: MonteCarloMetadata;
+  empiricalStatistics?: EmpiricalStatistics;
 }
 
 // -----------------------------------------------------------------------------
@@ -145,6 +181,14 @@ export interface RiskScenarioComparison {
   riskTag: 'conservative' | 'balanced' | 'aggressive' | 'extreme';
 }
 
+export interface KellySensitivity {
+  sensitivityToWinRate: number; // dK / dW = 1 + 1/R
+  sensitivityToPayoff: number; // dK / dR = (1 - W) / R^2
+  stressedKellyPercent: number; // Kelly under stressed parameters (e.g. W - 5%, R * 0.85)
+  stressedWinRate: number;
+  stressedPayoffRatio: number;
+}
+
 export interface RiskOfRuinResult {
   initialCapital: number;
   winRate: number;
@@ -152,7 +196,9 @@ export interface RiskOfRuinResult {
   edgePercent: number; // Edge = (WinRate * Payoff - LossRate)
   advantage: number; // A parameter in Ralph Vince / Perry formula
   riskUnits: number; // Units of risk to breach
-  analyticalRuinProbability: number; // Closed form formula %
+  analyticalRuinProbability: number; // Asymptotic closed-form formula % (Ralph Vince, T -> inf)
+  asymptoticRuinProbability: number; // Explicit asymptotic ruin %
+  finiteHorizonRuinProbability: number; // Empirical & barrier finite horizon % for tradesHorizon
   empiricalRuinProbability: number; // Monte Carlo %
   scenarios: RiskScenarioComparison[];
   kellyCriterion: {
@@ -160,7 +206,9 @@ export interface RiskOfRuinResult {
     halfKellyPercent: number;
     quarterKellyPercent: number;
   };
+  kellySensitivity: KellySensitivity;
   recoveryProbability50Pct: number;
+  hypothesesAndLimits: string[];
 }
 
 // -----------------------------------------------------------------------------
@@ -175,6 +223,8 @@ export type PropFirmDrawdownType =
 
 export type PropFirmDailyLossType = 'balance_based' | 'equity_based';
 
+export type PropFirmDailyLossEnforcement = 'hard_breach' | 'soft_pause';
+
 export interface PropFirmSimulatorConfig {
   initialCapital: number;
   profitTargetPercent: number; // e.g. 8% or 10%
@@ -182,6 +232,7 @@ export interface PropFirmSimulatorConfig {
   maxDrawdownPercent: number; // e.g. 8% or 10%
   drawdownType: PropFirmDrawdownType;
   dailyLossType: PropFirmDailyLossType;
+  dailyLossEnforcement?: PropFirmDailyLossEnforcement; // default: 'hard_breach'
   resetHour: number; // 0-23
   resetTimezone: string; // e.g. 'UTC', 'America/New_York'
   winRate: number; // 0-100

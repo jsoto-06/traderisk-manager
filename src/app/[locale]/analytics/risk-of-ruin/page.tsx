@@ -11,6 +11,7 @@ import {
   TrendingUp,
   CheckCircle2,
   XCircle,
+  Info,
 } from 'lucide-react';
 import { useLocale } from '@/lib/i18n/useLocale';
 import { useStorage } from '@/hooks/useStorage';
@@ -143,25 +144,25 @@ export default function RiskOfRuinPage() {
       {/* Analytical KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
-          title={t.riskOfRuin.analyticalRoR}
-          value={`${result.analyticalRuinProbability}%`}
-          subtitle={`Fórmula Perry/Vince (${result.riskUnits} unidades)`}
+          title={t.riskOfRuin.asymptoticRoR}
+          value={`${result.asymptoticRuinProbability}%`}
+          subtitle={`Horizonte T → ∞ (Perry/Vince)`}
           icon={
-            result.analyticalRuinProbability < 1 ? (
+            result.asymptoticRuinProbability < 1 ? (
               <ShieldCheck className="w-5 h-5 text-[#10B981]" />
             ) : (
               <ShieldAlert className="w-5 h-5 text-[#EF4444]" />
             )
           }
-          trend={result.analyticalRuinProbability < 1 ? 'up' : 'down'}
+          trend={result.asymptoticRuinProbability < 1 ? 'up' : 'down'}
         />
 
         <StatCard
-          title={t.riskOfRuin.empiricalRoR}
-          value={`${result.empiricalRuinProbability}%`}
-          subtitle={`Simulación MC (${tradesHorizon} trades)`}
+          title={`${t.riskOfRuin.finiteRoR} (${tradesHorizon} T)`}
+          value={`${result.finiteHorizonRuinProbability}%`}
+          subtitle={`Simulación Monte Carlo (${result.riskUnits} stops)`}
           icon={<Calculator className="w-5 h-5 text-[#00F0FF]" />}
-          trend={result.empiricalRuinProbability < 1 ? 'up' : 'down'}
+          trend={result.finiteHorizonRuinProbability < 1 ? 'up' : 'down'}
         />
 
         <StatCard
@@ -189,7 +190,7 @@ export default function RiskOfRuinPage() {
         </div>
         <p className="text-xs text-[#8899A6] mb-4">{t.riskOfRuin.kellyWarning}</p>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <div className="p-4 rounded-lg bg-[#0A1128] border border-[#1E2D4A] text-center">
             <span className="text-xs text-[#8899A6] block">{t.riskOfRuin.fullKelly}</span>
             <span className="text-2xl font-bold text-[#F59E0B] mt-1 block">
@@ -219,6 +220,40 @@ export default function RiskOfRuinPage() {
             </span>
             <span className="text-[11px] text-[#8899A6] mt-0.5 block">
               Enfoque recomendado para cuentas fondeadas
+            </span>
+          </div>
+
+          <div className="p-4 rounded-lg bg-[#0A1128] border border-[#8B5CF6]/30 text-center">
+            <span className="text-xs text-[#A78BFA] font-medium block">
+              {t.riskOfRuin.stressedKelly}
+            </span>
+            <span className="text-2xl font-bold text-[#A78BFA] mt-1 block">
+              {result.kellySensitivity.stressedKellyPercent}%
+            </span>
+            <span className="text-[11px] text-[#8899A6] mt-0.5 block">
+              Degradación muestral (-5% W, -15% R)
+            </span>
+          </div>
+        </div>
+
+        {/* Kelly Sensitivity Card / Sub-row */}
+        <div className="mt-4 pt-4 border-t border-[#1E2D4A] grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="p-3 bg-[#0A1128] rounded border border-[#1E2D4A]/60 flex items-center justify-between">
+            <div>
+              <span className="text-xs text-[#8899A6] block">{t.riskOfRuin.sensitivityW}</span>
+              <span className="text-[11px] text-[#8899A6]/70">Derivada formal ∂K/∂W = 1 + 1/R</span>
+            </div>
+            <span className="text-sm font-bold text-[#00F0FF] font-mono">
+              +{result.kellySensitivity.sensitivityToWinRate.toFixed(2)}x
+            </span>
+          </div>
+          <div className="p-3 bg-[#0A1128] rounded border border-[#1E2D4A]/60 flex items-center justify-between">
+            <div>
+              <span className="text-xs text-[#8899A6] block">{t.riskOfRuin.sensitivityR}</span>
+              <span className="text-[11px] text-[#8899A6]/70">Derivada formal ∂K/∂R = (1-W)/R²</span>
+            </div>
+            <span className="text-sm font-bold text-[#00F0FF] font-mono">
+              +{result.kellySensitivity.sensitivityToPayoff.toFixed(2)}x
             </span>
           </div>
         </div>
@@ -314,6 +349,24 @@ export default function RiskOfRuinPage() {
           </table>
         </div>
       </Card>
+
+      {/* Mathematical Hypotheses and Limitations */}
+      {result.hypothesesAndLimits && result.hypothesesAndLimits.length > 0 && (
+        <Card className="p-5 bg-[#111C35] border border-[#1E2D4A]">
+          <div className="flex items-center gap-2 mb-3 text-xs font-semibold uppercase tracking-wider text-[#00F0FF]">
+            <Info className="w-4 h-4" />
+            {t.riskOfRuin.hypothesesTitle}
+          </div>
+          <ul className="space-y-2 text-xs text-[#8899A6]">
+            {result.hypothesesAndLimits.map((item, idx) => (
+              <li key={idx} className="flex items-start gap-2">
+                <span className="text-[#00F0FF] font-bold">•</span>
+                <span>{item}</span>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
     </div>
   );
 }

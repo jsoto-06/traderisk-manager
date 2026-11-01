@@ -1,5 +1,5 @@
 // =============================================================================
-// TradeRisk Manager — Monte Carlo Simulation Engine
+// TradeRisk Manager — Monte Carlo Simulation Engine (Fase 5.1)
 // =============================================================================
 
 import type { Trade } from '@/lib/types';
@@ -8,7 +8,12 @@ import type {
   MonteCarloResult,
   MonteCarloCurvePoint,
   DistributionBin,
+  MonteCarloMethod,
+  MonteCarloMetadata,
+  EmpiricalStatistics,
 } from './types';
+
+export const MONTE_CARLO_ALGORITHM_VERSION = '5.1.0';
 
 /**
  * Deterministic pseudo-random number generator (Mulberry32).
@@ -25,12 +30,26 @@ export function createMulberry32(seed: number = 1337) {
 }
 
 /**
+ * Samples standard normal variate N(0, 1) using Box-Muller transformation.
+ * Deterministic with the given uniform PRNG.
+ */
+export function sampleStandardNormal(prng: () => number): number {
+  let u1 = prng();
+  while (u1 <= 1e-15) {
+    u1 = prng();
+  }
+  const u2 = prng();
+  return Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
+}
+
+/**
  * Computes percentile from a pre-sorted array of numbers using linear interpolation.
  */
 export function calculatePercentile(sorted: number[], p: number): number {
   if (sorted.length === 0) return 0;
   if (sorted.length === 1) return sorted[0];
-  const index = (sorted.length - 1) * p;
+  const clampedP = Math.max(0, Math.min(1, p));
+  const index = (sorted.length - 1) * clampedP;
   const lower = Math.floor(index);
   const upper = Math.ceil(index);
   const weight = index - lower;
@@ -90,28 +109,77 @@ export function buildHistogramBins(values: number[], binCount: number = 10): Dis
 }
 
 /**
- * Runs a Monte Carlo bootstrap simulation on trading strategy or historical trades.
- *
- * Capabilities:
- * - Deterministic output with reproducible seed.
- * - Bootstrap sampling with replacement from historical closed trades.
- * - Parametric custom distribution mode (winRate, avgWin, avgLoss) when trades are scarce.
- * - Fixed dollar risk or Percentage-of-equity compounding risk models.
- * - Multi-percentile equity evolution curves (P5, P25, P50, P75, P95).
- * - Target probability, ruin probability, and drawdown breach metrics.
+ * Computes empirical higher statistical moments and tail metrics from historical R-multiples.
+ */
+export function calculateSampleStatistics(
+  rMultiples: number[],
+): EmpiricalStatistics | undefined {
+  const n = rMultiples.length;
+  if (n < 3) return undefined;
+
+  const sum = rMultiples.reduce((acc, v) => acc + v, 0);
+  const mean = sum / n;
+
+  const sumSqDiff = rMultiples.reduce((acc, v) => acc + Math.pow(v - mean, 2), 0);
+  const sampleVariance = sumSqDiff / (n - 1);
+  const stdDev = Math.sqrt(sampleVariance);
+
+  let skewness = 0;
+  let excessKurtosis = 0;
+
+  if (stdDev > 0 && n >= 4) {
+    const sumCubeDiff = rMultiples.reduce((acc, v) => acc + Math.pow((v - mean) / stdDev, 3), 0);
+    skewness = (n / ((n - 1) * (n - 2))) * sumCubeDiff;
+
+    const sumQuadDiff = rMultiples.reduce((acc, v) => acc + Math.pow((v - mean) / stdDev, 4), 0);
+    const kFactor = (n * (n + 1)) / ((n - 1) * (n - 2) * (n - 3));
+    const kSub = (3 * Math.pow(n - 1, 2)) / ((n - 2) * (n - 3));
+    excessKurtosis = kFactor * sumQuadDiff - kSub;
+  }
+
+  // Value at Risk 95% (5th percentile of historical R-multiples)
+  const sortedR = [...rMultiples].sort((a, b) => a - b);
+  const valueAtRisk95 = calculatePercentile(sortedR, 0.05);
+
+  // Compute maximum historical drawdown in R
+  let peakR = 0;
+  let cumR = 0;
+  let maxDdR = 0;
+  for (const r of rMultiples) {
+    cumR += r;
+    if (cumR > peakR) peakR = cumR;
+    const dd = peakR - cumR;
+    if (dd > maxDdR) maxDdR = dd;
+  }
+
+  return {
+    mean: Number(mean.toFixed(4)),
+    stdDev: Number(stdDev.toFixed(4)),
+    skewness: Number(skewness.toFixed(3)),
+    excessKurtosis: Number(excessKurtosis.toFixed(3)),
+    maxHistoricalDrawdown: Number(maxDdR.toFixed(2)),
+    historicalTradesCount: n,
+    valueAtRisk95,
+  };
+}
+
+/**
+ * Runs a Monte Carlo simulation engine with deterministic output,
+ * supporting IID bootstrap, Moving Block Bootstrap, and parametric modeling.
  */
 export function runMonteCarloSimulation(
   trades: Trade[],
   config: MonteCarloConfig,
 ): MonteCarloResult {
-  const prng = createMulberry32(config.seed ?? 42);
+  const seed = config.seed ?? 42;
+  const prng = createMulberry32(seed);
   const simulationsCount = Math.max(10, Math.min(config.simulationsCount || 1000, 5000));
   const tradesCount = Math.max(5, Math.min(config.tradesCount || 100, 1000));
   const initialCapital = Math.max(100, config.initialCapital || 10000);
   const maxDdLimitPercent = config.maxDrawdownLimitPercent ?? 10;
   const profitTarget = config.profitTarget;
 
-  // Extract trade R-multiples or net dollar profits from historical trades
+  // Extract trade R-multiples from historical closed trades
   const closed = trades.filter((t) => t.status === 'closed' && t.result != null);
   const historicalRMultiples: number[] = [];
 
@@ -128,15 +196,33 @@ export function runMonteCarloSimulation(
     if (initialRisk > 0) {
       historicalRMultiples.push(netResult / initialRisk);
     } else {
-      // Fallback: assume 1R is equal to average absolute loss or 1% of initial capital
+      // Fallback: scale against 1% of initial capital
       historicalRMultiples.push(netResult / (initialCapital * 0.01));
     }
   }
 
-  const useHistorical = !config.customDistribution && historicalRMultiples.length >= 5;
+  // Determine simulation method
+  let method: MonteCarloMethod;
+  if (config.method) {
+    method = config.method;
+  } else if (config.customDistribution) {
+    method =
+      config.customDistribution.winStdDev || config.customDistribution.lossStdDev
+        ? 'parametric_variable'
+        : 'parametric_fixed';
+  } else if (historicalRMultiples.length >= 5) {
+    method = 'bootstrap_iid';
+  } else {
+    method = 'parametric_fixed';
+  }
 
-  // Pre-allocate matrix of simulations: [simIndex][tradeStep]
-  // tradeStep 0 = initialCapital
+  // Empirical descriptive statistics
+  const empiricalStatistics = calculateSampleStatistics(historicalRMultiples);
+
+  // Block size for Block Bootstrap
+  const blockSize = Math.max(1, Math.min(config.blockSize || 5, Math.max(1, historicalRMultiples.length)));
+
+  // Matrix of simulations: [tradeStep][simIndex]
   const stepValues: number[][] = Array.from({ length: tradesCount + 1 }, () => []);
   for (let s = 0; s < simulationsCount; s++) {
     stepValues[0].push(initialCapital);
@@ -160,6 +246,10 @@ export function runMonteCarloSimulation(
     let hitRuin = false;
     let breachedDd = false;
 
+    // Buffer for Block Bootstrap
+    let blockBuffer: number[] = [];
+    let blockIndex = 0;
+
     for (let t = 1; t <= tradesCount; t++) {
       if (currentEquity <= 0) {
         hitRuin = true;
@@ -168,21 +258,48 @@ export function runMonteCarloSimulation(
         continue;
       }
 
-      let pnl = 0;
+      let rMultiple = 0;
 
-      if (useHistorical) {
-        // Bootstrap sample with replacement
+      if (method === 'bootstrap_block' && historicalRMultiples.length > 0) {
+        // Circular Moving Block Bootstrap
+        if (blockIndex >= blockBuffer.length) {
+          blockBuffer = [];
+          const startIdx = Math.floor(prng() * historicalRMultiples.length);
+          for (let b = 0; b < blockSize; b++) {
+            blockBuffer.push(historicalRMultiples[(startIdx + b) % historicalRMultiples.length]);
+          }
+          blockIndex = 0;
+        }
+        rMultiple = blockBuffer[blockIndex++];
+      } else if (method === 'bootstrap_iid' && historicalRMultiples.length > 0) {
+        // Standard IID Bootstrap with replacement
         const randomIndex = Math.floor(prng() * historicalRMultiples.length);
-        const rMultiple = historicalRMultiples[randomIndex];
+        rMultiple = historicalRMultiples[randomIndex];
+      } else if (method === 'parametric_variable') {
+        // Continuous Parametric distribution with dispersion
+        const dist = config.customDistribution ?? {
+          winRate: 50,
+          averageWin: 200,
+          averageLoss: 100,
+          winStdDev: 80,
+          lossStdDev: 30,
+        };
 
-        if (config.riskType === 'percentage_equity') {
-          const riskDollars = currentEquity * (config.riskValue / 100);
-          pnl = riskDollars * rMultiple;
+        const isWin = prng() * 100 < dist.winRate;
+        const avgLoss = Math.max(0.01, dist.averageLoss);
+        const z = sampleStandardNormal(prng);
+
+        if (isWin) {
+          const winStd = dist.winStdDev ?? (dist.averageWin * 0.4);
+          const winGain = Math.max(0.01, dist.averageWin + winStd * z);
+          rMultiple = winGain / avgLoss;
         } else {
-          pnl = config.riskValue * rMultiple;
+          const lossStd = dist.lossStdDev ?? (dist.averageLoss * 0.3);
+          const lossAmt = Math.max(0.01, dist.averageLoss + lossStd * Math.abs(z));
+          rMultiple = -(lossAmt / avgLoss);
         }
       } else {
-        // Parametric mode
+        // Parametric Fixed (2-point Bernoulli model)
         const dist = config.customDistribution ?? {
           winRate: 50,
           averageWin: 200,
@@ -191,13 +308,15 @@ export function runMonteCarloSimulation(
 
         const isWin = prng() * 100 < dist.winRate;
         const payoffRatio = dist.averageLoss > 0 ? dist.averageWin / dist.averageLoss : 1.5;
+        rMultiple = isWin ? payoffRatio : -1.0;
+      }
 
-        if (config.riskType === 'percentage_equity') {
-          const riskDollars = currentEquity * (config.riskValue / 100);
-          pnl = isWin ? riskDollars * payoffRatio : -riskDollars;
-        } else {
-          pnl = isWin ? config.riskValue * payoffRatio : -config.riskValue;
-        }
+      let pnl = 0;
+      if (config.riskType === 'percentage_equity') {
+        const riskDollars = currentEquity * (config.riskValue / 100);
+        pnl = riskDollars * rMultiple;
+      } else {
+        pnl = config.riskValue * rMultiple;
       }
 
       currentEquity = Math.max(0, currentEquity + pnl);
@@ -220,7 +339,6 @@ export function runMonteCarloSimulation(
         hitTarget = true;
       }
 
-      // Check ruin (<= 10% of initial capital or <= 0)
       if (currentEquity <= initialCapital * 0.1 || currentEquity <= 0) {
         hitRuin = true;
       }
@@ -278,8 +396,20 @@ export function runMonteCarloSimulation(
 
   const finalEquityDistribution = buildHistogramBins(finalEquities, 10);
 
+  const metadata: MonteCarloMetadata = {
+    seed,
+    algorithmVersion: MONTE_CARLO_ALGORITHM_VERSION,
+    method,
+    simulationsCount,
+    tradesCount,
+    blockSize: method === 'bootstrap_block' ? blockSize : undefined,
+    riskType: config.riskType,
+    riskValue: config.riskValue,
+    timestamp: '2026-11-01T00:00:00Z',
+  };
+
   const disclaimer =
-    'Aviso de riesgo: Las simulaciones Monte Carlo son estimaciones estadísticas basadas en supuestos y datos históricos. No garantizan rendimientos futuros ni protegen contra pérdidas.';
+    'Aviso metodológico: Las simulaciones estocásticas son modelos matemáticos basados en supuestos de distribución y remuestreo empírico. No constituyen asesoramiento financiero ni garantías de resultados futuros.';
 
   return {
     simulationsCount,
@@ -296,5 +426,7 @@ export function runMonteCarloSimulation(
     curves,
     finalEquityDistribution,
     disclaimer,
+    metadata,
+    empiricalStatistics,
   };
 }
