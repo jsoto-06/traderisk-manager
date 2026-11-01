@@ -203,6 +203,7 @@ export interface RiskOfRuinResult {
   analyticalRuinProbability: number; // Asymptotic closed-form formula % (Ralph Vince, T -> inf)
   asymptoticRuinProbability: number; // Explicit asymptotic ruin %
   finiteHorizonRuinProbability: number; // Empirical & barrier finite horizon % for tradesHorizon
+  exactFiniteRuinProbability?: number; // Analytical Dynamic Programming solution for classical Gambler's Ruin (R = 1, fixed risk)
   empiricalRuinProbability: number; // Monte Carlo %
   scenarios: RiskScenarioComparison[];
   kellyCriterion: {

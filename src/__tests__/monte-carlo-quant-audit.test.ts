@@ -409,6 +409,26 @@ describe('TradeRisk Manager — Auditoría Cuantitativa y Validación Monte Carl
       expect(rorCertain.asymptoticRuinProbability).toBe(100.0);
       expect(rorCertain.finiteHorizonRuinProbability).toBe(100.0);
     });
+
+    it('Benchmark 15.D: Ruina Asintótica = 100.00% pero Ruina Finita < 100.00%', () => {
+      const rorDistinction = calculateRiskOfRuin({
+        initialCapital: 10000,
+        winRate: 45, // Ventaja negativa
+        averageWin: 100,
+        averageLoss: 100,
+        riskPerTradePercent: 1.0,
+        maxLossLimitPercent: 5, // U = 5
+        tradesHorizon: 10,      // T = 10
+        riskModel: 'fixed_amount',
+        seed: 444,
+      });
+
+      expect(rorDistinction.asymptoticRuinProbability).toBe(100.0);
+      // Para U=5, T=10, W=45%: Exact DP es 17.43%
+      expect(rorDistinction.finiteHorizonRuinProbability).toBeGreaterThan(12.0);
+      expect(rorDistinction.finiteHorizonRuinProbability).toBeLessThan(23.0);
+      expect(rorDistinction.exactFiniteRuinProbability).toBe(17.43);
+    });
   });
 
   // ===========================================================================

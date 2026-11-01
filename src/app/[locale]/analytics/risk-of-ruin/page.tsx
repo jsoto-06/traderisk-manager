@@ -175,7 +175,11 @@ export default function RiskOfRuinPage() {
         <StatCard
           title={`${t.riskOfRuin.finiteRoR} (${tradesHorizon} T)`}
           value={`${result.finiteHorizonRuinProbability}%`}
-          subtitle={`Simulación Monte Carlo (${result.riskUnits} stops)`}
+          subtitle={
+            result.exactFiniteRuinProbability !== undefined
+              ? `MC (${result.riskUnits} stops) · Exacto DP: ${result.exactFiniteRuinProbability}%`
+              : `Simulación Monte Carlo (${result.riskUnits} stops)`
+          }
           icon={<Calculator className="w-5 h-5 text-[#00F0FF]" />}
           trend={result.finiteHorizonRuinProbability < 1 ? 'up' : 'down'}
         />

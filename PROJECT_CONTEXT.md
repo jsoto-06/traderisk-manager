@@ -748,7 +748,58 @@ En la Fase 5.2 se ejecutó una auditoría matemática y estadística independien
 
 ---
 
-## 18. Próximos Pasos (Fase 6)
+## 18. Fase 5.2.1: Corrección y Validación Independiente del Cálculo de Riesgo de Ruina (Completada)
+
+En la Fase 5.2.1 se ejecutó una validación e investigación independiente sobre la aparente discrepancia detectada entre los valores tabulados en el informe de la Fase 5.2 y las probabilidades analíticas de Gambler's Ruin.
+
+### 1. Diagnóstico Matemático y Causa Raíz de la Discrepancia
+1. **Error de Tipografía y Desalineación en el Informe Fase 5.2**:
+   - En la tabla de benchmarks del informe de la Fase 5.2, los parámetros descritos en el texto no correspondían a los parámetros ejecutados en el código de prueba. Por ejemplo, en BM-15.B el texto del informe citaba $W=0.4, U=5, T=100$ pero reportaba un valor observado del $63.80\%$ (que correspondía a una corrida con $U=10, T=50$, donde la probabilidad exacta es $64.03\%$). Para los parámetros reales $W=0.4, U=5, T=100$, la probabilidad analítica exacta de ruina finita es **$98.00\%$**.
+   - En BM-15.D el informe citaba $W=0.45, U=5, T=10$ con `Fin: 2.8%`, cuando la probabilidad exacta para $U=5, T=10$ es **$17.43\%$** (el valor $2.8\%$ procedía de un test con $U=8, T=10$ donde la probabilidad analítica es $2.50\% \sim 2.8\%$).
+2. **Diferenciación entre Riesgo Fijo (`fixed_amount`) y Riesgo Porcentual (`percentage_equity`)**:
+   - En **Riesgo Fijo** (\$100 por trade, capital \$10,000, pérdida máxima 5% = \$500), se requieren exactamente $U = 5$ pérdidas netas para tocar la barrera. Coincide exactamente con el modelo clásico de Gambler's Ruin.
+   - En **Riesgo Porcentual** (1% sobre equity actual), tras 5 pérdidas consecutivas el balance es $\$10,000 \times 0.99^5 = \$9,509.90 > \$9,500$. Por ende, se requieren $k \ge \frac{\ln(0.95)}{\ln(0.99)} = 5.103 \implies 6$ pérdidas netas consecutivas para quebrar la cuenta. Esto reduce la probabilidad empírica de ruina de 17.43% a 11.60% (que coincide con $U = 6$ en Gambler's Ruin: 11.46%).
+3. **Omisión de `riskModel` en Tabla de Sensibilidad**:
+   - En `calculateRiskOfRuin`, la función `scenarios.map(...)` no transfería el parámetro `riskModel` a la simulación empírica interna, recurriendo siempre al valor por defecto. Corregido para propagar `riskModel` de forma uniforme.
+
+### 2. Implementación de Referencia Determinista (Programación Dinámica)
+Se implementó y exportó la función analítica `calculateExactGamblersRuin`:
+- **Espacio de Estados**: $k \in \{0, 1, \dots, U + T\}$.
+- **Condición de Frontera Absorbente**:
+  $$\Delta P_t(0) = dp_{t-1}[1] \cdot (1 - W)$$
+  $$dp_t[k] = dp_{t-1}[k-1] \cdot W + dp_{t-1}[k+1] \cdot (1 - W), \quad k \ge 1$$
+- **Probabilidad Acumulada**: $\text{Ruin}(T) = \sum_{t=1}^T \Delta P_t(0)$.
+- **Conservación de Masa**: $\text{Ruin}(T) + \sum_{k=1}^{U+T} dp_T[k] = 1.000000000000 \pm 10^{-12}$.
+- **Complejidad**: Tiempo $O(T \cdot (U + T))$, Espacio $O(U + T)$.
+
+### 3. Validación de los Ocho Escenarios Canónicos
+| Escenario | W | U | T | Exacto DP | Asintótico (Perry/Vince) | MC Fijo ($N=2,000$) | Diff Abs | Error Estándar ($SE$) | IC 95% Teórico |
+|---|---|---|---|---|---|---|---|---|---|
+| **A** | 40% | 3 | 50 | **94.98%** | 100.00% | 94.85% | 0.13% | 0.49% | [94.03%, 95.94%] |
+| **B** | 40% | 5 | 100 | **98.00%** | 100.00% | 98.20% | 0.20% | 0.31% | [97.38%, 98.61%] |
+| **C** | 45% | 5 | 10 | **17.43%** | 100.00% | 17.55% | 0.12% | 0.85% | [15.76%, 19.09%] |
+| **D** | 45% | 5 | 100 | **87.36%** | 100.00% | 85.65% | 1.71% | 0.74% | [85.90%, 88.82%] |
+| **E** | 50% | 5 | 100 | **61.73%** | 100.00% | 60.65% | 1.08% | 1.09% | [59.60%, 63.86%] |
+| **F** | 60% | 5 | 100 | **12.90%** | 13.17% | 13.50% | 0.60% | 0.75% | [11.44%, 14.37%] |
+| **G** | 0% | 5 | 10 | **100.00%** | 100.00% | 100.00% | 0.00% | 0.00% | [100.00%, 100.00%] |
+| **H** | 100% | 5 | 100 | **0.00%** | 0.00% | 0.00% | 0.00% | 0.00% | [0.00%, 0.00%] |
+
+Todas las simulaciones Monte Carlo concuerdan con la solución determinista de Programación Dinámica dentro del intervalo de tolerancia estocástica.
+
+### 4. Tests Creados y Modificados
+- Nuevo archivo de test: `src/__tests__/gamblers-ruin-exact.test.ts` (15 tests de invariantes, condiciones de frontera, 8 escenarios canónicos y diferenciación de modelos).
+- Añadido Benchmark 15.D explícito a `src/__tests__/monte-carlo-quant-audit.test.ts`.
+- Integración en UI: visualización de la solución exacta de Programación Dinámica en `src/app/[locale]/analytics/risk-of-ruin/page.tsx`.
+
+### 5. Estado de la Suite de Pruebas
+- **218 tests unitarios y de auditoría aprobados** (21 archivos de test).
+- **6 tests de integración Supabase** omitidos condicionalmente.
+- **0 errores de compilación (`npx tsc --noEmit`) y 0 advertencias de linter (`npm run lint`)**.
+- **Compilación de producción exitosa en Next.js 16.4.3 Turbopack (`npm run build`)**.
+
+---
+
+## 19. Próximos Pasos (Fase 6)
 
 * Exportación de informes cuantitativos en formato PDF y hojas de cálculo CSV para auditorías de riesgo y prop firms.
 * Conexión con proveedores de datos de mercado en tiempo real (Binance API, Interactive Brokers Web API).

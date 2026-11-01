@@ -75,6 +75,14 @@ export function calculateRiskOfRuin(config: RiskOfRuinConfig): RiskOfRuinResult 
   const finiteHorizonRuinProbability = empiricalSimulation.ruinProbability;
   const empiricalRuinProbability = finiteHorizonRuinProbability;
 
+  // Exact finite-horizon ruin probability via Dynamic Programming for classical Gambler's Ruin (R = 1, fixed risk)
+  let exactFiniteRuinProbability: number | undefined;
+  if (Math.abs(payoffRatio - 1.0) < 0.01 && riskModel === 'fixed_amount') {
+    exactFiniteRuinProbability = Number(
+      calculateExactGamblersRuin(riskUnits, winRate, tradesHorizon).toFixed(2),
+    );
+  }
+
   // 3. Kelly Criterion & Sensitivity Analysis
   // K = (W * (R + 1) - 1) / R
   let fullKelly = 0;
@@ -150,6 +158,7 @@ export function calculateRiskOfRuin(config: RiskOfRuinConfig): RiskOfRuinResult 
       tradesCount: tradesHorizon,
       simulationsCount: 1000,
       seed: (config.seed ?? 101) + (idx + 1) * 13,
+      riskModel,
     });
 
     const expectedReturn = Number(
@@ -206,6 +215,7 @@ export function calculateRiskOfRuin(config: RiskOfRuinConfig): RiskOfRuinResult 
     analyticalRuinProbability: asymptoticRuinProbability, // preserved for backward-compatibility
     asymptoticRuinProbability,
     finiteHorizonRuinProbability,
+    exactFiniteRuinProbability,
     empiricalRuinProbability,
     scenarios,
     kellyCriterion: {
@@ -275,4 +285,64 @@ function simulateEmpiricalRuin(params: EmpiricalSimParams): EmpiricalSimOutput {
     ruinProbability: Number(((ruinedCount / params.simulationsCount) * 100).toFixed(2)),
     lossProbability: Number(((endingLossCount / params.simulationsCount) * 100).toFixed(2)),
   };
+}
+
+/**
+ * Computes the exact, analytical finite-horizon ruin probability for the classical
+ * Gambler's Ruin problem via deterministic Dynamic Programming.
+ *
+ * Model hypotheses:
+ * - Starting capital: U discrete risk units (U >= 1)
+ * - Gain per win: +1 unit with probability W
+ * - Loss per loss: -1 unit with probability 1 - W (R = 1.0)
+ * - Absorbing barrier at 0 (ruin upon reaching 0 at or before T trades)
+ * - Semi-infinite domain above 0 (unbounded upper winning potential)
+ *
+ * Recurrence relation:
+ * - State space: k in {0, 1, ..., U + T}
+ * - dp_t[0] = dp_{t-1}[0] + dp_{t-1}[1] * (1 - W)  (accumulated absorption)
+ * - dp_t[k] = dp_{t-1}[k - 1] * W + dp_{t-1}[k + 1] * (1 - W) for k >= 1
+ *
+ * Complexity: O(T * (U + T)) time, O(U + T) memory.
+ *
+ * @param riskUnits Number of unit steps from capital to barrier (U)
+ * @param winRate Probability of winning trade (0-1 or 0-100)
+ * @param tradesHorizon Finite trading horizon (T)
+ * @returns Cumulative ruin probability as a percentage [0.00, 100.00]
+ */
+export function calculateExactGamblersRuin(
+  riskUnits: number,
+  winRate: number,
+  tradesHorizon: number,
+): number {
+  const U = Math.round(riskUnits);
+  const W = winRate > 1 ? winRate / 100 : winRate;
+  const T = Math.round(tradesHorizon);
+
+  if (U <= 0) return 100.0;
+  if (T <= 0) return 0.0;
+  if (W <= 0) return T >= U ? 100.0 : 0.0;
+  if (W >= 1) return 0.0;
+  if (T < U) return 0.0;
+
+  const q = 1 - W;
+  let dp = new Float64Array(U + T + 2);
+  dp[U] = 1.0;
+  let cumulativeRuin = 0.0;
+
+  for (let t = 1; t <= T; t++) {
+    const nextDp = new Float64Array(U + T + 2);
+    // Absorption at barrier 0 from state 1
+    cumulativeRuin += dp[1] * q;
+
+    const maxK = U + t;
+    for (let k = 1; k <= maxK; k++) {
+      const fromLeft = k > 1 ? dp[k - 1] * W : 0;
+      const fromRight = k + 1 <= U + T ? dp[k + 1] * q : 0;
+      nextDp[k] = fromLeft + fromRight;
+    }
+    dp = nextDp;
+  }
+
+  return Number((Math.min(1.0, cumulativeRuin) * 100).toFixed(4));
 }
