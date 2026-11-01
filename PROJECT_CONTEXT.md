@@ -1331,36 +1331,46 @@ export interface PropFirmRuleProfile {
 
 ---
 
-## 24. Preparación y Alcance del Paso 8.1 (Pendiente de Autorización Expresa)
+## 24. Implementación Completada del Paso 8.1 (Feeds Públicos de Binance)
 
-Una vez aprobada formalmente la planificación documental, la primera implementación técnica se acotará estrictamente al **Paso 8.1**, con el siguiente alcance delimitado:
+El **Paso 8.1** ha sido implementado y verificado en su totalidad de acuerdo con las especificaciones técnicas y restricciones no negociables autorizadas.
 
-### 1. Alcance Técnico del Paso 8.1:
-1. **Contratos y Tipos de Cotización**:
-   - Definición de interfaces en `src/lib/market-data/types.ts`: `MarketPriceQuote`, `FeedStatus` (`'live' | 'stale' | 'offline' | 'manual'`), `ProviderId`, `MarketDataProvider`, opciones de suscripción y metadatos de calidad temporal.
-2. **Adaptadores Públicos de Mercado de Binance (Spot, USD-M y Coin-M)**:
-   - Implementación de adaptadores en `src/lib/market-data/binance/` que consumen exclusivamente los streams públicos y anónimos de Binance (`stream.binance.com`, `fstream.binance.com`, `dstream.binance.com`).
-3. **Validación Estructural de Precios**:
-   - Tipos numéricos positivos y finitos (rechazo incondicional de `NaN`, `null`, `undefined` o $\le 0$).
-   - Coherencia del libro de órdenes: spread cero permitido ($\text{Ask} == \text{Bid}$ en stablecoins o pares fee-zero); rechazo estricto si $\text{Bid} > \text{Ask}$.
-   - Detección de picos (`suspect_spike`) ante desvíos $> \pm 10\%$ y mecanismo de reevaluación tras 3 ticks confirmados.
-4. **Validación Temporal Rigurosa**:
-   - Medición de intervalos transcurridos con reloj monotónico `performance.now()`.
-   - Estimación de offset de reloj ($\Delta_{\text{clock}}$) durante el handshake.
-   - Rechazo estricto de ticks fuera de orden y descarte de timestamps futuros superiores a 2,000 ms.
-5. **Gestión de Conexión y Reconexión Resiliente**:
-   - Reconexión automática con retroceso exponencial y jitter ante la desconexión obligatoria de Binance a las 24 horas.
-   - Respuesta automática a tramas Ping/Pong RFC 6455 según producto (Spot: Ping del servidor cada 20s y Pong obligatorio en <1 min; USD-M y Coin-M: Ping cada 3 min y Pong requerido en <10 min).
-6. **Ciclo de Estados de Salud del Feed**:
-   - Gestión explícita de estados: `LIVE` (verde), `STALE` (amarillo con edad expuesta), `OFFLINE` (rojo con último precio guardado) y `MANUAL` (gris).
-7. **Suite de Pruebas Unitarias del Adaptador y Validaciones**:
-   - Archivo de pruebas unitarias dedicado en `src/__tests__/market-data.test.ts` que valide de forma aislada los contratos, la conexión, la reconexión simulada, el descarte de anomalías y la precisión temporal.
+### 1. Componentes y Archivos Creados
+1. **Contratos y Tipos Canónicos (`src/lib/market-data/types.ts`)**:
+   - `FeedStatus` (`'live' | 'stale' | 'offline' | 'manual'`).
+   - `ConnectionState` (`'disconnected' | 'connecting' | 'connected' | 'reconnecting'`).
+   - `MarketPriceQuote`: Contrato inmutable que almacena `asset`, `rawSymbol`, `provider`, `contractType`, `bid`, `ask`, `mid`, `spread`, `updateId`, `exchangeEventTime` (opcional/ausente en Spot), `transactionTime`, `localReceivedAt`, `monotonicReceivedAt`, `status`, `isSpike`, `spikeReason`, `lastReliableQuote`, `st` (universo de margen) y `pairSymbol`.
+   - Abstracción desacoplada de WebSocket (`IWebSocket`, `WebSocketFactory`) y reloj monotónico (`IClock`).
+2. **Motor Cuantitativo de Validación (`src/lib/market-data/validation.ts`)**:
+   - `validatePriceStructure`: Comprueba que `bid` y `ask` sean números positivos y finitos; permite spread cero ($\text{Bid} == \text{Ask}$); rechaza libros cruzados ($\text{Bid} > \text{Ask}$).
+   - `validateTemporalOrdering`: Permite timestamps idénticos legítimos; rechaza marcas temporales en retroceso; valida monotonicidad del `updateId`; rechaza timestamps futuros $> 2{,}000\,\text{ms}$.
+   - `evaluateFeedStaleness`: Evalúa la frescura por instrumento mediante `monotonicReceivedAt` ($\le 5\text{s} \implies \text{LIVE}$, $5\text{s}-30\text{s} \implies \text{STALE}$, $> 30\text{s} \implies \text{OFFLINE}$).
+   - `SpikeDetector`: Heurística con umbral configurable ($10\%$) y confirmación por 3 ticks consecutivos coherentes (tolerancia del $2\%$) sin descartar ticks en silencio y conservando `lastReliableQuote` para cálculos críticos.
+3. **Adaptadores de Mercado Públicos (`src/lib/market-data/binance/`)**:
+   - `BinanceBaseAdapter`: Clase abstracta que gestiona la conexión, reconexión exponencial con jitter, reconexión preventiva a las 24 horas y limitador upstream por token bucket.
+   - `BinanceSpotAdapter`: Conecta al endpoint oficial `wss://stream.binance.com:9443/ws`, limita peticiones upstream a 5 msgs/s y gestiona `bookTicker` sin `E` mediante `updateId` y recepción local.
+   - `BinanceUsdmAdapter`: Conecta al endpoint oficial `wss://fstream.binance.com/public/stream`, limita upstream a 10 msgs/s, procesa `E`, `T`, `u` y captura el universo `st = 1`.
+   - `BinanceCoinmAdapter`: Conecta a `wss://dstream.binance.com/ws`, limita upstream a 10 msgs/s, captura `st = 2` y `ps`, y preserva la identidad del contrato distinguiendo perpetuos (`_PERP`) de contratos con vencimiento (`_YYMMDD`, ej. `2026-03-27`).
+   - `createBinanceAdapter`: Fábrica unificada para instanciación desacoplada.
+4. **Punto de Entrada del Módulo (`src/lib/market-data/index.ts`)**:
+   - Re-exporta de forma pública tipos, validaciones y adaptadores.
+5. **Suite de Pruebas Unitarias Deterministas (`src/__tests__/market-data.test.ts`)**:
+   - 32 pruebas unitarias automatizadas cubriendo validación estructural, validación temporal, frescura, detector de picos a 3 ticks, adaptadores Spot, USD-M y Coin-M, y el invariante de seguridad que verifica la ausencia de métodos de trading o claves privadas.
 
-### 2. Restricciones Innegociables del Paso 8.1:
-- **No integrar Finnhub**: permanece formalmente en estado PENDIENTE.
-- **No implementar ejecución de órdenes ni endpoints de trading**: la plataforma es 100% manual.
-- **No solicitar API Keys privadas**: los streams de Binance a implementar son 100% públicos y anónimos.
-- **No abrir ni cerrar posiciones automáticamente**.
-- **No modificar el motor multiactivo existente** auditado en las Fases 3 a 7.
-- **No alterar las fases 1 a 7**.
-- **Esperar autorización previa expresa antes de escribir cualquier archivo de código**.
+### 2. Resultados de Validación y Calidad
+- **Vitest**: **297 tests pasados** (26 suites aprobadas, 6 tests omitidos condicionalmente correspondientes a integración remota con Supabase). 0 fallos.
+- **ESLint**: 0 errores, 0 advertencias.
+- **TypeScript (`tsc --noEmit`)**: 0 errores de tipado estricto.
+- **Next.js Build**: Compilación Turbopack exitosa de las 37 rutas de la aplicación.
+- **Invariantes de Trading**: 0 endpoints privados, 0 claves privadas requeridas, plataforma estrictamente manual.
+
+---
+
+## 25. Próximos Pasos (Esperando Autorización Formal para Paso 8.2)
+
+* **Paso 8.2 (Pendiente de Autorización)**:
+  - Implementación del motor de valuación de posiciones abiertas en tiempo real (`FloatingPositionValuation`).
+  - Cálculo de Floating PnL (Spot, Perpetuos USD-M, Futuros Coin-M inversos con valuación asimétrica, Forex).
+  - Cálculo de Dynamic Open Risk (`CapitalRiskAtSL`, `MarkToStopDistance`, `EstimatedExitCosts`).
+  - Separación contable estricta: `Equity = LedgerBalance + Sum(FloatingNetPnL)`.
+  - Pruebas unitarias de conciliación contable y de ejecución.
