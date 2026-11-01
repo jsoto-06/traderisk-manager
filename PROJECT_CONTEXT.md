@@ -1703,7 +1703,38 @@ El motor actuará como una capa pura sobre el estado contable existente. Si no e
 
 ---
 
-## 26. Próximos Pasos (Esperando Autorización Formal para Implementar Paso 8.2)
+---
 
-* Revisión y visto bueno de esta formulación matemática corregida.
-* Una vez concedida la autorización expresa, apertura e implementación secuencial del código del **Paso 8.2**.
+## 26. Estado de Implementación y Verificación del Paso 8.2
+
+El **Paso 8.2 (Motor de Valuación Cuantitativa en Tiempo Real)** ha sido implementado y verificado en su totalidad:
+
+1. **Arquitectura Modular (`src/lib/valuation/`)**:
+   - `types.ts`: Interfaces exhaustivas para snapshots de posición (`FloatingPositionValuation`), snapshots de cuenta (`AccountValuationSnapshot`), riesgo dinámico (`DynamicOpenRiskSnapshot`), Daily Loss (`DailyLossSnapshot`) y conciliación (`ExecutionReconciliation`).
+   - `timezone.ts`: Motor de cálculo horario para `America/New_York` con reset a las 17:00, gestionando automáticamente transiciones entre horario de verano (EDT UTC-4) e invierno (EST UTC-5).
+   - `risk.ts`: Motor de Dynamic Open Risk segregando `InitialCapitalRisk` (SL original) de `CapitalRiskAtSL` (SL vigente evaluado a Bid/Ask, anulado si está en break-even/profit o cruzado) y `MarkToStopDistance` (devolución de beneficio a Bid/Ask).
+   - `daily-loss.ts`: Motor de Daily Loss intradía con aislamiento de flotante heredado, recuperación sin penalización, eliminación de doble deducción al cerrar y neutralización de depósitos/retiradas.
+   - `calculators/`:
+     - `spot.ts`: Valuación Spot Long (Bid) y Short (Ask) con validación concurrente de 3 requisitos de préstamo (`INOPERABLE_SPOT_SHORT_CASH_ACCOUNT`, `INOPERABLE_SPOT_SHORT_INSTRUMENT_NOT_SHORTABLE`, `INOPERABLE_SPOT_SHORT_BORROW_CAPACITY_EXCEEDED`, `INOPERABLE_SPOT_SHORT_BORROW_RATE_UNAVAILABLE`).
+     - `usdm.ts`: Derivados lineales con funding y comisiones de salida.
+     - `coinm.ts`: Derivados inversos asimétricos con liquidación en cripto base y conversión a divisa de cuenta.
+     - `forex.ts`: Lotes estándar, pip values, pips y tasas de conversión FX.
+     - `futures.ts`: Futuros CME con multiplicador y costes de compensación.
+     - `stocks.ts`: Acciones y CFDs con comisiones y costes de préstamo.
+   - `engine.ts`: `MultiAssetValuationEngine` que orquesta la valuación, impone el invariante de **Integridad de Equidad** (`isValuationComplete: false`, congelando Peak Equity si hay posiciones sin cotización), y audita la varianza de ejecución.
+   - `index.ts`: Exportación de la API pública del subsistema.
+
+2. **Suite de Pruebas Deterministas (`src/__tests__/valuation-engine.test.ts`)**:
+   - 28 pruebas unitarias deterministas cubriendo todos los instrumentos, escenarios de short spot, asimetría de Coin-M, dynamic open risk, daily loss con flujos de caja, conciliación contable, integridad de equidad y fallback offline-first.
+   - Total de pruebas del proyecto: **328 tests pasando al 100%** (0 fallos, 6 omitidos de Supabase real).
+   - TypeScript `tsc --noEmit`: 0 errores.
+   - ESLint: 0 errores, 0 advertencias.
+   - Build de producción Next.js (Turbopack): Compilación exitosa de todas las rutas estáticas y dinámicas.
+
+---
+
+## 27. Próximos Pasos (Preparación del Paso 8.3)
+
+* Conexión reactiva entre los adaptadores de datos de mercado de Binance (`src/lib/market-data/`) y el motor de valuación (`MultiAssetValuationEngine`).
+* Suscripción en tiempo real a streams públicos según las posiciones abiertas del usuario.
+* Visualización en la interfaz de usuario preservando la estricta naturaleza manual de TradeRisk Manager (0 ejecución automática, 0 órdenes de mercado automáticas, control 100% en manos del usuario).
