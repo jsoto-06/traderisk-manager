@@ -914,8 +914,52 @@ En la Fase 6.1 se llevó a cabo una auditoría exhaustiva de cierre sobre la con
 
 ---
 
-## 22. Próximos Pasos (Fase 7)
+## 22. FASE 7 — Desarrollo del Sistema de Informes Cuantitativos PDF y CSV (Completada)
 
-* Exportación de informes cuantitativos en formato PDF y hojas de cálculo CSV para auditorías de riesgo y prop firms.
+En la Fase 7 se desarrolló el motor institucional de generación y exportación de informes cuantitativos en formatos PDF vectorial y hojas de cálculo CSV (RFC 4180).
+
+### 1. Motor de Exportación CSV (`src/lib/reports/csv-exporter.ts`)
+- **Libro Mayor de Operaciones (`generateTradeLedgerCsv`)**:
+  - Exporta el historial completo de trades con campos normalizados: ID, Fecha Apertura, Fecha Cierre, Activo, Dirección (LONG/SHORT), Estado, Tamaño, Precios (Entrada, Salida, SL, TP), PnL Bruto, Comisiones, PnL Neto, Estrategia, Temporalidad y Notas.
+  - Cumplimiento estricto con el estándar RFC 4180: escape seguro de comas, saltos de línea y comillas dobles (`""`).
+  - Compatibilidad total con Microsoft Excel y Google Sheets mediante prefijo de marca de orden de bytes UTF-8 (`\uFEFF`).
+- **Resumen Ejecutivo Cuantitativo (`generateExecutiveSummaryCsv`)**:
+  - Estructurado en bloques temáticos delimitados:
+    1. *Identificación y Estado de Cuenta*: Nombre, tipo, divisa, capital inicial, balance, equidad, PnL total (\$ y %).
+    2. *Rendimiento Global*: Total trades, ganadores, perdedores, Win Rate %, Profit Factor, PnL neto, comisiones, promedios, mejor/peor trade, rachas máximas.
+    3. *Expectativa Matemática*: Expectativa (\$ y R-multiple), ratio win/loss, breakeven trades, adecuación muestral.
+    4. *Drawdown y Preservación*: High-Water Mark, Drawdown máximo (\$, %), Drawdown actual (\$, %), Factor de Recuperación, trades de recuperación bajo agua.
+    5. *Reglas Prop Firm*: Piso de drawdown, distancia al piso, límite de pérdida diaria, pérdida hoy, distancia a pérdida diaria, objetivo de beneficio y estado de infracción.
+
+### 2. Generador de Informes PDF Institucionales (`src/lib/reports/pdf-generator.ts`)
+- **Diseño Ejecutivo con `jspdf`**:
+  - Encabezado con banner corporativo Navy (`#0A1128`), líneas de acento Cyan (`#00F0FF`), metadatos de auditoría, timestamp UTC y versión.
+  - Franja de 4 tarjetas ejecutivas de KPI: Balance / PnL Neto, Win Rate / Profit Factor, Expectativa Matemática, Drawdown Máximo.
+  - Tablas vectoriales de 4 columnas para rendimiento global, expectativa matemática, preservación de capital y reglas prop firm.
+  - Página 2 dedicada al Libro Mayor de Operaciones (Audit Trail) con desglose cronológico de posiciones cerradas, cálculo de PnL neto colorizado y fila de totales sumatorios de bruto, comisiones y neto.
+  - Numeración dinámica de páginas en pie de documento ("Página X de Y") y sello de confidencialidad.
+
+### 3. Integración en la Interfaz de Usuario
+- **Componente Modal Reutilizable (`src/components/reports/ExportReportModal.tsx`)**:
+  - Selector de cuenta objetivo.
+  - Selector de formato con tarjetas interactivas: PDF Institucional, CSV Resumen Ejecutivo, CSV Libro Mayor.
+  - Opción para incluir o excluir el libro mayor detallado en el PDF.
+- **Puntos de Entrada**:
+  - `AnalyticsPage` (`/[locale]/analytics`): Botón destacado "Exportar Informe" en la cabecera.
+  - `TradesPage` (`/[locale]/trades`): Botón "Exportar" para descarga directa del libro mayor o informe completo.
+  - `SettingsPage` (`/[locale]/settings`): Sección dedicada "Informes Cuantitativos y Auditoría".
+
+### 4. Suite de Pruebas y Estado Global
+- Nuevo archivo de test: `src/__tests__/quantitative-reporting.test.ts` (7 pruebas de escape RFC 4180, validación UTF-8 BOM, resumen multisección, encabezados bilingües ES/EN y generación PDF binario).
+- Estado global de Vitest: **265 tests aprobados** (25 archivos de prueba), 6 tests de Supabase real omitidos condicionalmente.
+- TypeScript (`npx tsc --noEmit`): 0 errores.
+- ESLint (`npm run lint`): 0 advertencias, 0 errores.
+- Compilación de producción (`npm run build`): Prerenderizado estático de 37 páginas exitoso.
+
+---
+
+## 23. Próximos Pasos (Fase 8)
+
 * Conexión con proveedores de datos de mercado en tiempo real (Binance API, Interactive Brokers Web API).
 * Registro automático de diario mediante webhooks de trading o importación de archivos de extracto (MT4/MT5, NinjaTrader, cTrader).
+* Módulo avanzado de alertas de riesgo en vivo y notificaciones push.
