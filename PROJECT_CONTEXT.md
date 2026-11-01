@@ -613,7 +613,19 @@ En la Fase 5 se implementó un motor analítico y estocástico institucional par
 
 ---
 
-## 16. Próximos Pasos (Fase 6)
+## 16. Fase 5.1: Auditoría Matemática, Estadística y Validación del Motor Monte Carlo (Iniciada)
+
+En la Fase 5.1 se auditan los supuestos estadísticos y formulaciones de la Fase 5:
+- Incorporación de Block Bootstrap para modelado de dependencias temporales y clustering de rachas.
+- Modelo paramétrico con dispersión estadística real (desviación estándar, asimetría, curtosis y colas de pérdidas).
+- Distinción rigurosa entre Ruina Asintótica ($T \to \infty$) y Ruina a Horizonte Finito ($T$ trades).
+- Auditoría del Criterio de Kelly con análisis de sensibilidad a errores de estimación y escenario de estrés conservador.
+- Metadatos estocásticos deterministas en simulaciones (semilla, versión del algoritmo, método, timestamp).
+- Conjunto de benchmarks manuales con 15+ escenarios calculados matemáticamente.
+
+---
+
+## 17. Próximos Pasos (Fase 6)
 
 * Exportación de informes cuantitativos en formato PDF y hojas de cálculo CSV para auditorías de riesgo y prop firms.
 * Conexión con proveedores de datos de mercado en tiempo real (Binance API, Interactive Brokers Web API).
