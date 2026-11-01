@@ -44,6 +44,7 @@ export function simulatePropFirmChallenge(
   const tradesPerDay = Math.max(1, Math.min(20, config.tradesPerDay || 3));
   const maxDays = Math.max(5, Math.min(365, config.maxDays || 60));
   const dailyEnforcement = config.dailyLossEnforcement || 'hard_breach';
+  const dailyLossBase = config.dailyLossBase || 'initial_capital';
   const payoffRatio =
     config.averageLoss > 0
       ? Number((config.averageWin / config.averageLoss).toFixed(3))
@@ -54,6 +55,7 @@ export function simulatePropFirmChallenge(
   let dailyLossBreachCount = 0;
   let maxDrawdownBreachCount = 0;
   let bothBreachedCount = 0;
+  let dailyLossTriggersCount = 0;
   let timeoutCount = 0;
 
   const daysToPassList: number[] = [];
@@ -88,6 +90,10 @@ export function simulatePropFirmChallenge(
 
       const dayStartBalance = currentBalance;
       let dayPeak = dayStartBalance;
+      const dailyLossLimitAmountForDay =
+        dailyLossBase === 'day_start_balance'
+          ? Number((dayStartBalance * (config.dailyLossLimitPercent / 100)).toFixed(2))
+          : dailyLossLimitAmount;
 
       // Execute trades for the day
       for (let trade = 0; trade < tradesPerDay; trade++) {
@@ -125,7 +131,7 @@ export function simulatePropFirmChallenge(
             ? dayPeak - currentBalance
             : dayStartBalance - currentBalance;
 
-        if (currentDailyLoss >= dailyLossLimitAmount) {
+        if (currentDailyLoss >= dailyLossLimitAmountForDay) {
           experiencedDailyLoss = true;
           if (dailyEnforcement === 'hard_breach') {
             breachedDailyHard = true;
@@ -173,6 +179,10 @@ export function simulatePropFirmChallenge(
     } else {
       timeoutCount++;
     }
+
+    if (experiencedDailyLoss) {
+      dailyLossTriggersCount++;
+    }
   }
 
   // Aggregate probabilities
@@ -180,6 +190,9 @@ export function simulatePropFirmChallenge(
   const failProbability = Number(((failCount / simulationsCount) * 100).toFixed(2));
   const dailyLossBreachProbability = Number(
     (((dailyLossBreachCount + bothBreachedCount) / simulationsCount) * 100).toFixed(2),
+  );
+  const dailyLossTriggersProbability = Number(
+    ((dailyLossTriggersCount / simulationsCount) * 100).toFixed(2),
   );
   const maxDrawdownBreachProbability = Number(
     (((maxDrawdownBreachCount + bothBreachedCount) / simulationsCount) * 100).toFixed(2),
@@ -223,6 +236,7 @@ export function simulatePropFirmChallenge(
     passProbability,
     failProbability,
     dailyLossBreachProbability,
+    dailyLossTriggersProbability,
     maxDrawdownBreachProbability,
     timeoutProbability,
     expectedDaysToPass,
@@ -233,6 +247,7 @@ export function simulatePropFirmChallenge(
       dailyLossBreaches: dailyLossBreachCount + bothBreachedCount,
       maxDrawdownBreaches: maxDrawdownBreachCount + bothBreachedCount,
       bothBreached: bothBreachedCount,
+      dailyLossTriggersCount,
     },
   };
 }

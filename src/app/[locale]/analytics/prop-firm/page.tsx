@@ -62,6 +62,8 @@ export default function PropFirmSimulatorPage() {
   const [dailyLossType, setDailyLossType] = useState<PropFirmDailyLossType>('balance_based');
   const [dailyLossEnforcement, setDailyLossEnforcement] =
     useState<PropFirmDailyLossEnforcement>('hard_breach');
+  const [dailyLossBase, setDailyLossBase] =
+    useState<'initial_capital' | 'day_start_balance'>('initial_capital');
   const [riskPerTradePercent, setRiskPerTradePercent] = useState<number>(
     activeAccount?.riskPerTrade || 0.5,
   );
@@ -84,6 +86,7 @@ export default function PropFirmSimulatorPage() {
       drawdownType: activeAccount?.drawdownType === 'trailing' ? 'trailing_balance' : 'static',
       dailyLossType: 'balance_based',
       dailyLossEnforcement: 'hard_breach',
+      dailyLossBase: 'initial_capital',
       resetHour: 0,
       resetTimezone: 'UTC',
       winRate: 55,
@@ -113,6 +116,7 @@ export default function PropFirmSimulatorPage() {
         drawdownType,
         dailyLossType,
         dailyLossEnforcement,
+        dailyLossBase,
         resetHour: 0,
         resetTimezone: 'UTC',
         winRate: Number(winRate) || 50,
@@ -234,6 +238,18 @@ export default function PropFirmSimulatorPage() {
             options={[
               { value: 'hard_breach', label: t.propFirm.enforceHardBreach },
               { value: 'soft_pause', label: t.propFirm.enforceSoftPause },
+            ]}
+          />
+
+          <Select
+            label="Base Límite Diario"
+            value={dailyLossBase}
+            onChange={(e) =>
+              setDailyLossBase(e.target.value as 'initial_capital' | 'day_start_balance')
+            }
+            options={[
+              { value: 'initial_capital', label: 'Capital Inicial (Estilo FTMO)' },
+              { value: 'day_start_balance', label: 'Balance de Apertura del Día' },
             ]}
           />
 

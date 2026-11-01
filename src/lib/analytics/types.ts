@@ -89,6 +89,7 @@ export interface MonteCarloConfig {
     lossStdDev?: number; // Optional dispersion of losing trades
     skewness?: number; // Optional skewness
     kurtosis?: number; // Optional kurtosis
+    distributionFamily?: 'lognormal' | 'truncated_normal'; // default: 'lognormal'
   };
 }
 
@@ -169,6 +170,9 @@ export interface RiskOfRuinConfig {
   maxLossLimitPercent: number; // e.g. 10% for Prop Firm or 100% for total ruin
   tradesHorizon?: number; // default 200
   seed?: number;
+  riskModel?: 'fixed_amount' | 'percentage_equity'; // default: 'fixed_amount' for analytical Gambler's Ruin alignment
+  maxKellyCapPercent?: number; // default: 25% max risk cap
+  historicalSampleSize?: number; // sample size N to evaluate parameter stability
 }
 
 export interface RiskScenarioComparison {
@@ -205,6 +209,9 @@ export interface RiskOfRuinResult {
     fullKellyPercent: number;
     halfKellyPercent: number;
     quarterKellyPercent: number;
+    cappedKellyPercent: number;
+    maxKellyCapPercent: number;
+    isCapped: boolean;
   };
   kellySensitivity: KellySensitivity;
   recoveryProbability50Pct: number;
@@ -233,6 +240,7 @@ export interface PropFirmSimulatorConfig {
   drawdownType: PropFirmDrawdownType;
   dailyLossType: PropFirmDailyLossType;
   dailyLossEnforcement?: PropFirmDailyLossEnforcement; // default: 'hard_breach'
+  dailyLossBase?: 'initial_capital' | 'day_start_balance'; // default: 'initial_capital'
   resetHour: number; // 0-23
   resetTimezone: string; // e.g. 'UTC', 'America/New_York'
   winRate: number; // 0-100
@@ -263,6 +271,7 @@ export interface PropFirmSimulatorResult {
   passProbability: number; // % reaching target without any breach
   failProbability: number;
   dailyLossBreachProbability: number; // % breaching daily loss limit
+  dailyLossTriggersProbability?: number; // % paths triggering daily loss pause/breach
   maxDrawdownBreachProbability: number; // % breaching overall max drawdown
   timeoutProbability: number; // % reaching maxDays without passing or failing
   expectedDaysToPass: number | null;
@@ -273,5 +282,6 @@ export interface PropFirmSimulatorResult {
     dailyLossBreaches: number;
     maxDrawdownBreaches: number;
     bothBreached: number;
+    dailyLossTriggersCount?: number;
   };
 }

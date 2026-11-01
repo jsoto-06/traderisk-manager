@@ -49,6 +49,11 @@ export default function RiskOfRuinPage() {
   const [riskPerTrade, setRiskPerTrade] = useState<number>(1.0);
   const [maxLossLimit, setMaxLossLimit] = useState<number>(10); // 10% Prop Firm drawdown limit default
   const [tradesHorizon, setTradesHorizon] = useState<number>(200);
+  const [maxKellyCap, setMaxKellyCap] = useState<number>(20);
+
+  const closedTradesCount = useMemo(() => {
+    return trades.filter((tr) => tr.status === 'closed').length;
+  }, [trades]);
 
   const result = useMemo(() => {
     return calculateRiskOfRuin({
@@ -59,8 +64,10 @@ export default function RiskOfRuinPage() {
       riskPerTradePercent: Number(riskPerTrade) || 1.0,
       maxLossLimitPercent: Number(maxLossLimit) || 10,
       tradesHorizon: Number(tradesHorizon) || 200,
+      maxKellyCapPercent: Number(maxKellyCap) || 20,
+      historicalSampleSize: closedTradesCount,
     });
-  }, [initialCapital, winRate, avgWin, avgLoss, riskPerTrade, maxLossLimit, tradesHorizon]);
+  }, [initialCapital, winRate, avgWin, avgLoss, riskPerTrade, maxLossLimit, tradesHorizon, maxKellyCap, closedTradesCount]);
 
   return (
     <div className="space-y-6">
@@ -138,6 +145,14 @@ export default function RiskOfRuinPage() {
             value={tradesHorizon}
             onChange={(e) => setTradesHorizon(Number(e.target.value))}
           />
+          <Input
+            label="Tope Máx. Kelly (%)"
+            type="number"
+            min={1}
+            max={50}
+            value={maxKellyCap}
+            onChange={(e) => setMaxKellyCap(Number(e.target.value))}
+          />
         </div>
       </Card>
 
@@ -196,7 +211,11 @@ export default function RiskOfRuinPage() {
             <span className="text-2xl font-bold text-[#F59E0B] mt-1 block">
               {result.kellyCriterion.fullKellyPercent}%
             </span>
-            <span className="text-[11px] text-[#8899A6] mt-0.5 block">Máximo crecimiento teórico</span>
+            <span className="text-[11px] text-[#8899A6] mt-0.5 block">
+              {result.kellyCriterion.isCapped
+                ? `Limitado por tope a ${result.kellyCriterion.cappedKellyPercent}%`
+                : 'Máximo crecimiento teórico'}
+            </span>
           </div>
 
           <div className="p-4 rounded-lg bg-[#0A1128] border border-[#10B981]/30 text-center">

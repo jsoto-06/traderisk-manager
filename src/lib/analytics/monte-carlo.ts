@@ -1,5 +1,5 @@
 // =============================================================================
-// TradeRisk Manager — Monte Carlo Simulation Engine (Fase 5.1)
+// TradeRisk Manager — Monte Carlo Simulation Engine (Fase 5.2)
 // =============================================================================
 
 import type { Trade } from '@/lib/types';
@@ -13,7 +13,7 @@ import type {
   EmpiricalStatistics,
 } from './types';
 
-export const MONTE_CARLO_ALGORITHM_VERSION = '5.1.0';
+export const MONTE_CARLO_ALGORITHM_VERSION = '5.2.0';
 
 /**
  * Deterministic pseudo-random number generator (Mulberry32).
@@ -40,6 +40,31 @@ export function sampleStandardNormal(prng: () => number): number {
   }
   const u2 = prng();
   return Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.PI * u2);
+}
+
+/**
+ * Samples a continuous strictly positive random variable with exact target expected value (mean)
+ * and variance (std^2) using a moment-matched lognormal distribution.
+ *
+ * For X ~ Lognormal(mu_ln, sigma_ln^2):
+ * sigma_ln^2 = ln(1 + (std / mean)^2)
+ * mu_ln = ln(mean) - 0.5 * sigma_ln^2
+ * E[X] = exp(mu_ln + 0.5 * sigma_ln^2) = mean  (exact)
+ * Var(X) = (exp(sigma_ln^2) - 1) * mean^2 = std^2 (exact)
+ * Support: (0, +infinity) strictly, completely avoiding artificial floor clipping bias.
+ */
+export function sampleLognormalVariate(mean: number, std: number, prng: () => number): number {
+  if (mean <= 0) return 0;
+  if (std <= 0) return mean;
+
+  const variance = Math.pow(std, 2);
+  const meanSquared = Math.pow(mean, 2);
+  const sigmaLnSquared = Math.log(1 + variance / meanSquared);
+  const sigmaLn = Math.sqrt(sigmaLnSquared);
+  const muLn = Math.log(mean) - 0.5 * sigmaLnSquared;
+
+  const z = sampleStandardNormal(prng);
+  return Math.exp(muLn + sigmaLn * z);
 }
 
 /**
@@ -174,7 +199,7 @@ export function runMonteCarloSimulation(
   const seed = config.seed ?? 42;
   const prng = createMulberry32(seed);
   const simulationsCount = Math.max(10, Math.min(config.simulationsCount || 1000, 5000));
-  const tradesCount = Math.max(5, Math.min(config.tradesCount || 100, 1000));
+  const tradesCount = Math.max(1, Math.min(config.tradesCount || 100, 2000));
   const initialCapital = Math.max(100, config.initialCapital || 10000);
   const maxDdLimitPercent = config.maxDrawdownLimitPercent ?? 10;
   const profitTarget = config.profitTarget;
@@ -287,15 +312,28 @@ export function runMonteCarloSimulation(
 
         const isWin = prng() * 100 < dist.winRate;
         const avgLoss = Math.max(0.01, dist.averageLoss);
-        const z = sampleStandardNormal(prng);
+        const avgWin = Math.max(0.01, dist.averageWin);
+        const family = dist.distributionFamily || 'lognormal';
 
         if (isWin) {
           const winStd = dist.winStdDev ?? (dist.averageWin * 0.4);
-          const winGain = Math.max(0.01, dist.averageWin + winStd * z);
+          let winGain: number;
+          if (family === 'lognormal') {
+            winGain = sampleLognormalVariate(avgWin, winStd, prng);
+          } else {
+            const z = sampleStandardNormal(prng);
+            winGain = Math.max(0.01, avgWin + winStd * z);
+          }
           rMultiple = winGain / avgLoss;
         } else {
           const lossStd = dist.lossStdDev ?? (dist.averageLoss * 0.3);
-          const lossAmt = Math.max(0.01, dist.averageLoss + lossStd * Math.abs(z));
+          let lossAmt: number;
+          if (family === 'lognormal') {
+            lossAmt = sampleLognormalVariate(avgLoss, lossStd, prng);
+          } else {
+            const z = sampleStandardNormal(prng);
+            lossAmt = Math.max(0.01, avgLoss + lossStd * z);
+          }
           rMultiple = -(lossAmt / avgLoss);
         }
       } else {

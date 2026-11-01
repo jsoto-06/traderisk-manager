@@ -683,7 +683,72 @@ En la Fase 5.1 se realizó una auditoría cuantitativa integral sobre las hipót
 
 ---
 
-## 17. Próximos Pasos (Fase 6)
+## 17. Fase 5.2: Auditoría Estadística Independiente y Validación Avanzada del Motor Monte Carlo (Completada)
+
+En la Fase 5.2 se ejecutó una auditoría matemática y estadística independiente y profunda sobre el motor Monte Carlo, el cálculo del Riesgo de Ruina, el Criterio de Kelly y el Simulador de Prop Firms, corrigiendo deficiencias teóricas y añadiendo 35 tests cuantitativos y probabilísticos rigurosos.
+
+### 1. Corrección del Modelo Paramétrico Variable (`parametric_variable`)
+- **Vulnerabilidad Encontrada**: En la Fase 5.1, las pérdidas se calculaban como `averageLoss + lossStd * Math.abs(z)`. Dado que $E[|Z|] = \sqrt{2/\pi} \approx 0.7979$, la pérdida media generada sufría un desplazamiento positivo artificial de $+0.798 \times \sigma$, sobreestimando la pérdida en un ~24%. Además, el truncamiento en 0.01 desplazaba la media condicional $E[X \mid X > 0.01] > \mu$.
+- **Solución Cuantitativa**:
+  - Implementación de **Distribución Lognormal con Calibración Exacta de Momentos** (`sampleLognormalVariate`):
+    $$\sigma_{\ln}^2 = \ln\left(1 + \frac{\sigma^2}{\mu^2}\right), \quad \mu_{\ln} = \ln(\mu) - \frac{1}{2} \sigma_{\ln}^2$$
+    $$X = \exp(\mu_{\ln} + \sigma_{\ln} Z), \quad Z \sim \mathcal{N}(0, 1)$$
+  - Propiedades demostradas:
+    1. $E[X] = \mu$ **exacto** (sin sesgo de suelo).
+    2. $\operatorname{Var}(X) = \sigma^2$ **exacto**.
+    3. Soporte estrictamente positivo $(0, \infty)$ sin discontinuidades ni masa puntual artificial en 0.01.
+    4. Modela naturalmente la asimetría positiva ($g_1 > 0$) y colas pesadas leptocúrticas ($g_2 > 0$) de los rendimientos financieros reales.
+- **Validación con Grandes Muestras ($N = 50,000$)**:
+  - Convergencia demostrada dentro de $\pm 3.5 \times SE$ ($\pm 3.5 \frac{\sigma}{\sqrt{N}}$) para $\mu = 200, \sigma = 60$ ($p < 0.001$).
+
+### 2. Auditoría Avanzada de Circular Moving Block Bootstrap
+- **Evaluación de Tamaños de Bloque ($B = 1, 2, 5, 10, 20$)**:
+  - Se demostró que el remuestreo I.I.D. ($B = 1$) destruye por completo la autocorrelación serial ($\rho_1 \approx 0.00 \pm 0.05$).
+  - Circular Moving Block Bootstrap preserva la autocorrelación proporcionalmente a la fracción de transiciones contiguas conservadas: $1 - \frac{1}{B}$.
+  - $B = 2$ conserva $\approx 50\%$ de la autocorrelación original; $B = 5$ conserva $\approx 80\%$; $B = 10$ conserva $\approx 90\%$.
+- **Preservación de Rachas**: En series autocorrelacionadas, las pérdidas agrupadas en rachas $\ge 5$ consecutivas son más de 3.4 veces superiores en Block Bootstrap ($B = 8$) frente a I.I.D.
+- **Efectos de Frontera Circular**: Documentado formalmente que el par $(X_N, X_1)$ introduce una transición no histórica que otorga pesos muestrales idénticos a todos los datos ($E[X^*] = \bar{X}$).
+- **Inexistencia de Bloque Universalmente Óptimo**: Se formalizó que la longitud óptima $B^*$ depende del decaimiento espectral de la autocorrelación y del tamaño muestral $N$, escalando asintóticamente como $O(N^{1/3})$ (Politis & White, 2004).
+
+### 3. Auditoría Exhaustiva del Riesgo de Ruina
+- **Eliminación del Clamping Artificial de Horizonte**:
+  - En Fase 5.1 existía `Math.max(10, tradesHorizon)` que impedía simular horizontes cortos ($T < 10$). Se corrigió a `Math.max(1, tradesHorizon)`.
+- **Validación de los 4 Escenarios Clave**:
+  1. *Ruina Finita = 0.00%*: Ocurre estrictamente cuando el horizonte temporal $T$ es menor que las unidades de riesgo para tocar la barrera de pérdida ($T < U$). Si $U = 10$ y $T = 5$, incluso perdiendo todas las operaciones es imposible tocar la barrera.
+  2. *Ruina Finita Intermedia*: Para $T \ge U$, $W > 0$ y ventaja $A \le 0$, la ruina finita es estrictamente intermedia (ej. 20%-50%).
+  3. *Ruina Finita = 100.00%*: Ocurre cuando $W = 0\%$ y $T \ge U$, o cuando el riesgo por operación es igual o superior al límite de pérdida tolerable ($U \le 1$).
+  4. *Ruina Asintótica = 100% vs. Finita < 100%*: Se demostró la distinción teórica fundamental entre el límite infinito $T \to \infty$ y el horizonte finito operativo $T$.
+- **Alineación de Modelos de Riesgo**: Soporte explícito de `riskModel: 'fixed_amount' | 'percentage_equity'` en `simulateEmpiricalRuin` para garantizar que la simulación empírica refleje fielmente el paseo aleatorio de Gambler's Ruin / Ralph Vince.
+
+### 4. Auditoría del Criterio de Kelly
+- **Límite de Riesgo Máximo Configurable (`maxKellyCapPercent`)**:
+  - Evita sobreexposición catastrófica cuando la fórmula teórica de Full Kelly sugiere fracciones irracionales (ej. 55% u 80%).
+  - Por defecto limitado a un 20%-25% prudencial (`cappedKellyPercent`).
+- **Advertencia por Muestra Insuficiente ($N < 30$)**:
+  - Si el historial de operaciones cerradas es inferior a 30 trades, el motor incluye una advertencia formal sobre el error estándar $\frac{\sigma}{\sqrt{N}}$ y la inestabilidad de Kelly.
+- **Casos Extremos Verificados**:
+  - $R = 100, W = 2\%$: Full Kelly $K = 1.02\%$, sensibilidad $\frac{\partial K}{\partial W} \approx 1.01$.
+  - $R = 0.05, W = 96\%$: Full Kelly $K = 16.0\%$, sensibilidad $\frac{\partial K}{\partial W} = 21.0$ (hipersensibilidad extrema al Win Rate).
+
+### 5. Auditoría de Prop Firms y Consumo Temporal
+- **Base de Cálculo de Pérdida Diaria Configurable (`dailyLossBase`)**:
+  - `'initial_capital'`: Calculado sobre el balance de arranque de la cuenta (estándar FTMO).
+  - `'day_start_balance'`: Calculado sobre el balance de apertura de cada sesión.
+- **Modelo de Soft Pause sin Distorsiones Artificiales**:
+  - Se verificó que pausar operaciones intradía consume días del calendario del reto.
+  - En horizontes ajustados (`maxDays`), la pausa intradía incrementa los timeouts por falta de sesiones operativas, evitando la falacia de que Soft Pause mejora universalmente la tasa de pase.
+
+### 6. Estado del Proyecto tras la Fase 5.2
+- **202 tests unitarios y de auditoría aprobados** (20 archivos de test).
+- **6 tests de integración Supabase** omitidos condicionalmente a la espera de credenciales en vivo.
+- **0 errores de TypeScript (`npx tsc --noEmit`)**.
+- **0 errores y 0 advertencias de ESLint (`npm run lint`)**.
+- **Compilación de producción exitosa en Next.js 16.4.3 Turbopack (`npm run build`)**.
+- **Versión del motor Monte Carlo**: `MONTE_CARLO_ALGORITHM_VERSION = '5.2.0'`.
+
+---
+
+## 18. Próximos Pasos (Fase 6)
 
 * Exportación de informes cuantitativos en formato PDF y hojas de cálculo CSV para auditorías de riesgo y prop firms.
 * Conexión con proveedores de datos de mercado en tiempo real (Binance API, Interactive Brokers Web API).

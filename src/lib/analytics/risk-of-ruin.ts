@@ -26,7 +26,7 @@ export function calculateRiskOfRuin(config: RiskOfRuinConfig): RiskOfRuinResult 
   const averageLoss = Math.max(0.01, config.averageLoss);
   const riskPerTradePercent = Math.max(0.05, Math.min(50, config.riskPerTradePercent));
   const maxLossLimitPercent = Math.max(1, Math.min(100, config.maxLossLimitPercent));
-  const tradesHorizon = Math.max(10, Math.min(2000, config.tradesHorizon || 200));
+  const tradesHorizon = Math.max(1, Math.min(5000, config.tradesHorizon || 200));
 
   const W = winRate / 100;
   const L = 1 - W;
@@ -59,6 +59,7 @@ export function calculateRiskOfRuin(config: RiskOfRuinConfig): RiskOfRuinResult 
 
   // 2. Finite Horizon Risk of Ruin (T trades)
   // Evaluated via 2,000 deterministic Monte Carlo paths over the specific tradesHorizon
+  const riskModel = config.riskModel ?? 'fixed_amount';
   const empiricalSimulation = simulateEmpiricalRuin({
     initialCapital,
     winRate,
@@ -68,6 +69,7 @@ export function calculateRiskOfRuin(config: RiskOfRuinConfig): RiskOfRuinResult 
     tradesCount: tradesHorizon,
     simulationsCount: 2000,
     seed: config.seed ?? 101,
+    riskModel,
   });
 
   const finiteHorizonRuinProbability = empiricalSimulation.ruinProbability;
@@ -82,6 +84,9 @@ export function calculateRiskOfRuin(config: RiskOfRuinConfig): RiskOfRuinResult 
   }
   const halfKelly = Number((fullKelly / 2).toFixed(2));
   const quarterKelly = Number((fullKelly / 4).toFixed(2));
+  const maxKellyCap = config.maxKellyCapPercent ?? 25;
+  const cappedKelly = Number(Math.min(fullKelly, maxKellyCap).toFixed(2));
+  const isCapped = fullKelly > maxKellyCap;
 
   // Kelly Sensitivities:
   // dK / dW = 1 + 1/R
@@ -179,11 +184,17 @@ export function calculateRiskOfRuin(config: RiskOfRuinConfig): RiskOfRuinResult 
 
   const hypothesesAndLimits = [
     'Independencia e idéntica distribución (I.I.D.): Las fórmulas asumen ausencia de autocorrelación serial entre operaciones consecutivas.',
-    'Horizonte Asintótico vs. Finito: La fórmula cerrada de Ralph Vince / Belmont modela el límite cuando T -> infinito; para un horizonte finito T, la probabilidad empírica de ruina es significativamente inferior.',
-    'Criterio de Kelly Teórico: Maximiza la tasa de crecimiento asintótico geométrico del capital, pero conlleva una volatilidad severa (drawdowns de hasta 50%-80%). En la gestión cuantitativa real se recomienda utilizar Half o Quarter Kelly.',
+    'Horizonte Asintótico vs. Finito: La fórmula cerrada de Ralph Vince / Belmont modela el límite asintótico cuando T -> infinito. En un horizonte finito T, la probabilidad empírica de ruina depende de T y de las unidades de parada U (puede ser 0% si T < U, intermedia, o 100% si el sistema carece de aciertos o el riesgo por operación agota el capital).',
+    'Criterio de Kelly No es una Garantía: Maximiza asintóticamente la tasa de crecimiento logarítmico del capital, pero no garantiza rentabilidad en plazos finitos y expone la cuenta a drawdowns profundos (50%-80%). Se incluye un tope de riesgo máximo configurable para prevenir sobreexposición.',
     'Sensibilidad de Parámetros: Pequeñas variaciones muestrales en el Win Rate o Payoff Ratio modifican de forma desproporcionada la fracción óptima de Kelly.',
     'Estacionariedad de Régimen: Los modelos asumen constancia en las condiciones de mercado; no contemplan cisnes negros fuera de la muestra histórica.',
   ];
+
+  if (config.historicalSampleSize !== undefined && config.historicalSampleSize < 30) {
+    hypothesesAndLimits.push(
+      `Muestra Histórica Insuficiente (N = ${config.historicalSampleSize} < 30): La estimación empírica de Win Rate y Payoff Ratio presenta un error estándar muestral elevado. El Criterio de Kelly sin regularizar amplifica estos errores de estimación.`,
+    );
+  }
 
   return {
     initialCapital,
@@ -201,6 +212,9 @@ export function calculateRiskOfRuin(config: RiskOfRuinConfig): RiskOfRuinResult 
       fullKellyPercent: fullKelly,
       halfKellyPercent: halfKelly,
       quarterKellyPercent: quarterKelly,
+      cappedKellyPercent: cappedKelly,
+      maxKellyCapPercent: maxKellyCap,
+      isCapped,
     },
     kellySensitivity,
     recoveryProbability50Pct,
@@ -217,6 +231,7 @@ interface EmpiricalSimParams {
   tradesCount: number;
   simulationsCount: number;
   seed: number;
+  riskModel?: 'fixed_amount' | 'percentage_equity';
 }
 
 interface EmpiricalSimOutput {
@@ -227,6 +242,8 @@ interface EmpiricalSimOutput {
 function simulateEmpiricalRuin(params: EmpiricalSimParams): EmpiricalSimOutput {
   const prng = createMulberry32(params.seed);
   const ruinThreshold = params.initialCapital * (1 - params.maxLossPercent / 100);
+  const isFixed = (params.riskModel ?? 'fixed_amount') === 'fixed_amount';
+  const fixedRiskDollars = params.initialCapital * (params.riskPercent / 100);
   let ruinedCount = 0;
   let endingLossCount = 0;
 
@@ -235,7 +252,7 @@ function simulateEmpiricalRuin(params: EmpiricalSimParams): EmpiricalSimOutput {
     let ruined = false;
 
     for (let t = 0; t < params.tradesCount; t++) {
-      const riskAmount = balance * (params.riskPercent / 100);
+      const riskAmount = isFixed ? fixedRiskDollars : balance * (params.riskPercent / 100);
       const isWin = prng() * 100 < params.winRate;
 
       if (isWin) {
