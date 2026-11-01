@@ -1031,22 +1031,43 @@ La distancia entre el precio actual y el Stop Loss no equivale a la pérdida de 
 
 ### 2. Formalización Contable y Demarcación de Balances
 
-Se define con rigor contable la arquitectura de libro mayor de la aplicación:
+Se define con rigor contable la arquitectura de libro mayor de la aplicación, eliminando cualquier riesgo de doble cómputo:
 
-1. **`ledgerBalance`**: Saldo contable interno de la cuenta acumulado exclusivamente a partir de operaciones formalmente cerradas, depósitos y retiros. **No constituye garantía de coincidencia con el saldo bancario del broker**, ya que este último puede incorporar spreads ocultos, slippage no modelado o swaps de fin de semana no registrados.
-2. **`brokerWalletBalance`**: Saldo efectivo reportado por la API del broker/exchange. **Solo estará presente si existe una conexión institucional de lectura directa**. En modo manual o feeds públicos de mercado, su valor es estrictamente `null`.
-3. **Segregación de Financiación (Funding)**:
-   - `settledFunding`: Financiación que ya ha sido formalmente liquidada e impactada en el saldo en efectivo de la cuenta.
-   - `accruedFunding`: Financiación devengada acumulada durante la vida de la posición abierta que aún no ha sido liquidada en el balance.
-4. **`floatingNetPnL` (Resultado Flotante Neto)**:
-   $$PnL_{\text{net, floating}} = PnL_{\text{gross}} + \text{accruedFunding} - \text{OpenCommissions} - \text{EstimatedCloseCommissions}$$
-5. **`equity` (Equidad Líquida)**:
-   $$\text{Equity} = \text{ledgerBalance} + \text{settledFunding} + \sum_{i \in \text{OpenPositions}} PnL_{\text{net, floating}, i}$$
-6. **Invariante de Cero Doble Deducción y Reconciliación de Cierre**:
-   - En `status === 'open'`, `ledgerBalance` permanece inalterado. La comisión de apertura reduce la equidad flotante, pero no el balance contable.
-   - Al cerrar la operación (`status === 'closed'`), el libro mayor aplica:
-     $$\Delta \text{Balance} = \text{ActualGrossResult} + \text{settledFunding} - (\text{OpenCommissions} + \text{ActualCloseCommissions})$$
-   - El trade sale del conjunto de abiertas. Si no restan posiciones abiertas, se verifica la conciliación exacta: $\text{Equity}_{\text{post-close}} \equiv \text{ledgerBalance}_{\text{post-close}}$.
+#### A. Definición de Balances
+1. **`ledgerBalance`**: Saldo contable interno de la cuenta acumulado a partir de:
+   - Resultados netos de operaciones cerradas.
+   - Comisiones formalmente realizadas.
+   - **Funding liquidado (`settledFunding`)**: Financiación que ya ha sido efectivamente cobrada o pagada y asentada en el balance en efectivo.
+   - Depósitos y retiradas de capital.
+   *(Nota: `ledgerBalance` es el saldo auditado interno; no garantiza coincidir con el extracto bancario del broker si existen discrepancias por spreads o swaps no modelados).*
+2. **`brokerWalletBalance`**: Saldo efectivo reportado por la API del broker/exchange. Solo estará presente si existe una conexión institucional de lectura directa. En modo manual o feeds públicos de mercado, su valor es estrictamente `null`.
+3. **Segregación Estricta de Financiación (Funding)**:
+   - `settledFunding`: Financiación ya liquidada e impactada en `ledgerBalance`. Puede exponerse en la UI como dato histórico de auditoría, **pero NUNCA se suma de forma independiente a la equidad porque ya forma parte del `ledgerBalance`**.
+   - `accruedFunding`: Financiación devengada acumulada durante la vida de la posición abierta que **aún no ha sido liquidada** en el balance.
+
+#### B. Fórmula Canónica de Equidad
+$$\text{Equity} = \text{LedgerBalance} + \sum_{i \in \text{OpenPositions}} PnL_{\text{net, floating}, i}$$
+
+Donde cada posición abierta computa:
+$$PnL_{\text{net, floating}} = PnL_{\text{gross}} + \text{accruedFunding} - \text{OpenCommissions} - \text{EstimatedCloseCommissions}$$
+- `PnL_gross`: Resultado no realizado al precio de mercado actual.
+- `accruedFunding`: Financiación devengada pendiente de contabilización.
+- `OpenCommissions`: Comisiones de apertura si están pendientes de contabilizar en el ledger.
+- `EstimatedCloseCommissions`: Coste estimado de salida proyectado al precio actual o Stop Loss.
+
+#### C. Invariante de Transición entre `accruedFunding` y `settledFunding`
+Cuando el exchange ejecuta un ciclo oficial de liquidación de funding (ej. a las 08:00 UTC) sobre una posición que continúa abierta:
+$$\Delta \text{LedgerBalance} = +\text{fundingPayment}$$
+$$\Delta \text{accruedFunding} = -\text{fundingPayment}$$
+$$\Delta \text{settledFunding} = +\text{fundingPayment}$$
+$$\Delta \text{Equity} \equiv 0.00$$
+- **Garantía Contable**: La transferencia entre financiación devengada y financiación liquidada es una operación de suma cero. La equidad de la cuenta no experimenta saltos discontinuos ni doble contabilización.
+
+#### D. Invariante de Reconciliación al Cierre
+Al cerrar la última posición abierta (`status === 'closed'`), el libro mayor aplica:
+$$\Delta \text{LedgerBalance} = \text{ActualGrossResult} + \text{accruedFunding} - (\text{OpenCommissions} + \text{ActualCloseCommissions})$$
+El trade abandona el conjunto de posiciones abiertas. Se verifica la reconciliación exacta:
+$$\text{Equity}_{\text{post-close}} \equiv \text{LedgerBalance}_{\text{post-close}}$$
 
 ---
 
@@ -1095,54 +1116,70 @@ Para instrumentos Coin-M (margen y liquidación en la criptomoneda base):
 
 ---
 
-### 4. Protección y Fusión Monotónica de Peak Equity
+### 4. Protección y Fusión Monotónica de Peak Equity en Servidor
 
-Para evitar heredar picos históricos entre retos o sufrir regresiones por sincronización distribuida:
+Para evitar heredar picos históricos entre evaluaciones y garantizar que ninguna sincronización distribuida atrasada reduzca el piso de drawdown:
 
-1. **Fusión Monotónica Atómica en Servidor (PostgreSQL)**:
-   - La actualización del pico no depende únicamente del cliente. En PostgreSQL se aplica una sentencia transaccional atómica:
-     ```sql
+1. **Sentencia SQL Parametrizada Válida y Atómica**:
+   ```sql
+   UPDATE public.accounts
+   SET peak_equity = GREATEST(COALESCE(peak_equity, 0), $1),
+       updated_at = timezone('utc'::text, now())
+   WHERE id = $2
+     AND user_id = auth.uid()
+     AND COALESCE(evaluation_cycle_id, '') = COALESCE($3, '');
+   ```
+2. **Función RPC Atómica en PostgreSQL (`SECURITY DEFINER` con RLS)**:
+   ```sql
+   CREATE OR REPLACE FUNCTION public.update_account_peak_equity(
+     p_account_id UUID,
+     p_new_peak NUMERIC,
+     p_evaluation_cycle_id TEXT
+   ) RETURNS NUMERIC
+   LANGUAGE plpgsql
+   SECURITY DEFINER
+   SET search_path = public, auth, pg_temp
+   AS $$
+   DECLARE
+     v_updated_peak NUMERIC;
+   BEGIN
      UPDATE public.accounts
-     SET peak_equity = GREATEST(COALESCE(peak_equity, 0), EXCLUDED.peak_equity),
+     SET peak_equity = GREATEST(COALESCE(peak_equity, 0), p_new_peak),
          updated_at = timezone('utc'::text, now())
-     WHERE id = target_account_id;
-     ```
-2. **Aislamiento por Ciclo de Evaluación (`evaluationCycleId`)**:
-   - Cada cuenta de Prop Firm incorpora un identificador único de evaluación (`evaluationCycleId`, ej. `"eval_topstep_50k_01"`).
-   - Al reiniciar un reto tras descalificación o pase de fase, se emite un nuevo `evaluationCycleId`.
-   - **Garantía**: `peakEquity` queda estrictamente vinculado al ciclo activo, impidiendo heredar picos alcanzados en evaluaciones anteriores.
-3. **Segregación de Métricas de Pico**:
+     WHERE id = p_account_id
+       AND user_id = auth.uid()
+       AND COALESCE(evaluation_cycle_id, '') = COALESCE(p_evaluation_cycle_id, '')
+     RETURNING peak_equity INTO v_updated_peak;
+     
+     RETURN v_updated_peak;
+   END;
+   $$;
+   ```
+3. **Garantías de Integridad y Aislamiento**:
+   - **Monotonicidad Irreversible**: La función `GREATEST(COALESCE(peak_equity, 0), p_new_peak)` garantiza matemáticamente que el pico nunca decrezca, incluso si llega una actualización distribuida con un timestamp posterior pero con un valor inferior.
+   - **Aislamiento por Ciclo de Evaluación (`evaluationCycleId`)**: Cada intento de evaluación o reto de prop firm posee un identificador de ciclo inmutable (`evaluationCycleId`, ej. `"eval_apex_50k_v1"`). Si el usuario resetea la cuenta tras una descalificación o inicia una nueva fase, se genera un nuevo `evaluationCycleId`. La cláusula `COALESCE(evaluation_cycle_id, '') = COALESCE(p_evaluation_cycle_id, '')` impide que la nueva evaluación herede picos alcanzados en el reto anterior.
+   - **Verificación Estricta de Titularidad (RLS)**: La condición `user_id = auth.uid()` garantiza que solo el propietario autenticado de la cuenta pueda actualizar su pico.
+4. **Segregación de Métricas de Pico**:
    - `peakBalance`: Máximo balance realizado cerrado.
    - `peakEquityIntraday`: Máxima equidad alcanzada en tiempo real. **Solo se actualiza cuando el 100% de las posiciones abiertas poseen cotizaciones `LIVE`**.
-   - `peakEquityEOD`: Equidad fijada al cierre de la jornada diaria oficial.
+   - `peakEquityEOD`: Equidad fijada al cierre de la jornada diaria oficial (17:00 EST).
 
 ---
 
-### 5. Medición Temporal Rigurosa y Detección de Anomalías
+### 5. Validación Rigurosa de Fuentes Externas (Binance y Feeds Públicos)
 
-Se sustituye cualquier mención a `Date.now()` como reloj monotónico. Se define la arquitectura de sincronización de tiempo:
+Binance WebSocket y REST son servicios públicos que no requieren API Keys ni credenciales privadas. No obstante, **ninguna cotización externa se inyecta directamente en los cálculos de riesgo sin una validación previa estricta**:
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                       ARQUITECTURA DE MEDICIÓN TEMPORAL                     │
-├─────────────────────┬───────────────────────────────────────────────────────┤
-│ Reloj Monotónico    │ performance.now() en el navegador.                    │
-│                     │ Mide intervalos continuos inmunes a ajustes NTP       │
-│                     │ o modificaciones del reloj del sistema operativo.     │
-├─────────────────────┼───────────────────────────────────────────────────────┤
-│ Wall-Clock Local    │ Date.now() UTC para fechar eventos absolutos.         │
-├─────────────────────┼───────────────────────────────────────────────────────┤
-│ Offset Horario      │ Δclock = Date.now() - serverTime (medido en handshake)│
-├─────────────────────┼───────────────────────────────────────────────────────┤
-│ Antigüedad Efectiva │ ageMs = (performance.now() - clientReceiptPerfTime)   │
-│                     │ + networkTransitEstimate                              │
-└─────────────────────┴───────────────────────────────────────────────────────┘
-```
-
-#### Filtros de Rechazo de Ticks:
-1. **Ticks Fuera de Orden**: Si $\text{providerTimestamp} < \text{lastProcessedProviderTimestamp}$, la cotización se descarta inmediatamente para impedir regresiones de precio por latencia asimétrica.
-2. **Timestamps Futuros Anómalos**: Si $\text{providerTimestamp} > \text{Date.now()} - \Delta_{\text{clock}} + 2,000 \text{ ms}$, la cotización se rechaza y se emite una advertencia de deriva horaria.
-3. **Invariante de Frescura**: Aunque un tick acabe de ingresar al socket, si su `providerTimestamp` ajustado supera el umbral de mercado ($\ge 5 \text{s}$ en Cripto; $\ge 15 \text{s}$ en Forex/Acciones), se clasifica obligatoriamente como `STALE`.
+1. **Validación Estructural de Datos**:
+   - Comprobación de tipos numéricos positivos y finitos (rechazo incondicional de `NaN`, `null`, `undefined` o $\le 0$).
+2. **Coherencia del Libro de Órdenes**:
+   - Invariante obligatoria: $\text{Bid} \le \text{Mid} \le \text{Ask}$ y $\text{Spread} = \text{Ask} - \text{Bid} > 0$.
+   - Si $\text{Bid} > \text{Ask}$ (libro cruzado anómalo por error del feed), la cotización se descarta de inmediato sin alterar la última cotización válida.
+3. **Filtro de Picos Anómalos (Spike Filter / Sanity Check)**:
+   - Si un tick entrante se desvía más de un umbral porcentual configurable (ej. $\pm 10\%$) respecto a la media móvil de ticks recientes sin un incremento sustancial de volumen, la cotización se etiqueta como sospechosa (`suspect_spike`) y no se utiliza de forma inmediata para el cálculo de liquidación ni margen.
+4. **Validación Temporal con Reloj Monotónico**:
+   - Medición de intervalos con `performance.now()` en el navegador (inmune a saltos NTP).
+   - Descarte inmediato de ticks fuera de orden ($\text{providerTimestamp} < \text{lastProcessedTimestamp}$) y rechazo de timestamps futuros superiores a 2,000 ms respecto al reloj local ajustado por offset.
 
 ---
 
@@ -1200,23 +1237,48 @@ export interface PropFirmRuleProfile {
 | **TEST-8.8** | Fusión Monotónica de Peak Equity | Actualización remota con timestamp posterior pero `peakEquity` inferior no reduce el pico local. |
 | **TEST-8.9** | Aislamiento por `evaluationCycleId`| Al cambiar de ciclo o reiniciar cuenta, el pico histórico del ciclo previo no se propaga al nuevo. |
 | **TEST-8.10**| Rechazo de ticks anómalos | Cotización con timestamp fuera de orden o futuro > 2s descartada sin alterar la última cotización. |
+| **TEST-8.11**| Transición Funding Devengado / Liquidado | Al liquidarse funding sobre posición abierta: $\Delta \text{LedgerBalance} = +\text{funding}$, $\Delta \text{accruedFunding} = -\text{funding} \implies \Delta \text{Equity} \equiv 0.00$. Cero doble conteo. |
+| **TEST-8.12**| Concurrencia Atómica SQL de Peak Equity | Múltiples updates concurrentes en `update_account_peak_equity` convergen estrictamente al valor `GREATEST` respetando `evaluationCycleId` y RLS de usuario. |
+| **TEST-8.13**| Validación Estructural de Feed Externo | Rechazo inmediato de cotización si $\text{Bid} > \text{Ask}$ (libro cruzado) o ante desvío instantáneo $> \pm 10\%$ sin volumen (`suspect_spike`). |
 
 ---
 
-### 8. Decisiones Técnicas Pendientes y Confirmación de Estado
+### 8. Arquitectura Requerida para Control Global de Cuota de Proveedores Autenticados (Finnhub)
 
-1. **Decisión de Caché en Servidor**:
-   - Para el proxy REST seguro de Finnhub/Twelve Data, se implementará una caché en memoria en Next.js con TTL de 3 segundos para garantizar que múltiples aperturas o consultas concurrentes en el cliente nunca sobrepasen las 60 req/min del plan gratuito.
-2. **Finnhub WebSocket**:
-   - Se mantiene formalmente en estado **PENDIENTE** por no disponerse de un microservicio Node.js stateful dedicado para tunelar WebSockets con SSE. Se operará de forma segura vía REST Proxy.
-3. **Estado del Repositorio**:
-   - **Cero código funcional modificado**.
-   - Suite de Vitest intacta: 265 pruebas aprobadas, 6 pruebas reales de Supabase omitidas condicionalmente.
-   - Sincronizado en `PROJECT_CONTEXT.md`.
+> [!WARNING]
+> **Deficiencia de una Caché Local en Memoria**: En arquitecturas serverless como Next.js sobre Vercel o AWS Lambda, múltiples instancias independientes y efímeras atienden peticiones concurrentes. Una caché local en memoria (`new Map()`) solo protege la instancia individual donde se ejecuta; 20 instancias concurrentes superarán holgadamente el límite estricto de 60 req/min de Finnhub, provocando errores HTTP 429 (Too Many Requests).
+
+#### Especificación de la Arquitectura Distribuida de Cuota (Para Futura Implementación):
+1. **Caché Compartida Distribuida**:
+   - Capa de almacenamiento centralizado (Upstash Redis / Vercel KV) bajo la clave canónica `market_quote:<symbol>`.
+   - Permite que todas las instancias serverless y todos los usuarios compartan la misma cotización en caché durante su TTL.
+2. **Limitador Global de Tasa por API Key (Sliding Window Counter)**:
+   - Contador atómico centralizado en Redis (`RATELIMIT:finnhub:minute`) con tope de **55 peticiones por minuto** (dejando 5 llamadas de margen de seguridad frente al límite de 60).
+3. **Deduplicación de Peticiones Concurrentes (Singleflight / In-Flight Coalescing)**:
+   - Si múltiples usuarios o componentes solicitan la cotización de `AAPL` simultáneamente mientras no está en caché, solo una única llamada HTTP se despacha al proveedor externo; las demás peticiones se acoplan a la promesa en curso.
+4. **Control Previo de Cuota (Pre-Flight Quota Check)**:
+   - Antes de despachar cualquier llamada externa a Finnhub, se consulta el cupo restante del minuto. Si la cuota está agotada, el proxy no realiza la llamada externa y sirve la última cotización almacenada con estado explícito `STALE`.
+5. **Backoff Exponencial y Manejo de Errores 429**:
+   - Si Finnhub responde con HTTP 429, el servidor respeta la cabecera `Retry-After` y bloquea temporalmente el envío de nuevas peticiones, conmutando el estado del feed a degradado.
+6. **Filtro de Cobertura y Permisos por Activo**:
+   - Validación previa para comprobar si el símbolo solicitado pertenece a un mercado soportado en el plan gratuito (ej. Acciones EE.UU. Cboe BZX), rechazando de inmediato consultas a mercados no soportados (como Forex WS o índices con licencia) para no consumir cuota en llamadas destinadas a fallar.
+
+> [!IMPORTANT]
+> **ESTADO DE INTEGRACIÓN DE FINNHUB**: **No se iniciará todavía la integración de Finnhub**. Se mantendrá en estado PENDIENTE hasta disponer de la infraestructura distribuida de control de cuota. Para la etapa inicial de feeds en tiempo real se priorizarán exclusivamente los **streams públicos y anónimos de Binance (Spot, USD-M y Coin-M)** que no requieren API Keys ni presentan restricciones de cuota por usuario.
+
+---
+
+### 9. Estado del Repositorio y Confirmación de Cero Cambios Funcionales
+
+- **Documento Maestro Actualizado**: [`PROJECT_CONTEXT.md`](file:///c:/Users/Jony/Documents/traderisk-manager/PROJECT_CONTEXT.md).
+- **Código Funcional Modificado**: **0 líneas**.
+- **Paso 8.1**: **No iniciado**.
+- **Suite de Pruebas**: **265 tests aprobados**, 6 omitidos condicionalmente.
+- **Árbol de Trabajo**: Limpio (`working tree clean`).
 
 ---
 
 ## 24. Próximos Pasos (Esperando Autorización Formal)
 
-* Visto bueno final a esta especificación técnica de cierre.
-* Una vez concedida la aprobación, inicio formal y secuencial del **Paso 8.1** (Tipado y contratos en `src/lib/market-data/types.ts`).
+* Revisión y visto bueno final de esta especificación técnica de cierre.
+* Una vez concedida la aprobación formal, autorización para la apertura e implementación secuencial del **Paso 8.1** (Tipado y contratos en `src/lib/market-data/types.ts`).
