@@ -20,7 +20,9 @@ import {
   LogOut,
   CloudUpload,
   Database,
+  FileText,
 } from 'lucide-react';
+import { ExportReportModal } from '@/components/reports/ExportReportModal';
 import { useLocale } from '@/lib/i18n/useLocale';
 import { useStorage } from '@/hooks/useStorage';
 import { useAuth } from '@/hooks/useAuth';
@@ -70,6 +72,7 @@ export default function SettingsPage() {
   const { isOnline, isSyncing, syncNow, lastSyncTime } = useSync();
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [migrationModalOpen, setMigrationModalOpen] = useState(false);
+  const [exportReportModalOpen, setExportReportModalOpen] = useState(false);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -306,6 +309,42 @@ export default function SettingsPage() {
               Cargar Archivo...
             </Button>
           </div>
+        </div>
+      </Card>
+
+      {/* Quantitative Reports & Audit Export Section (Fase 7) */}
+      <Card
+        title={locale === 'es' ? 'Informes Cuantitativos y Auditoría' : 'Quantitative Reports & Audit'}
+        subtitle={
+          locale === 'es'
+            ? 'Exportación institucional en PDF y CSV para auditorías de riesgo y verificación de prop firms'
+            : 'Institutional PDF and CSV export for risk audits and prop firm verification'
+        }
+      >
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 bg-[#0A1128] border border-[#1E2D4A] rounded-xl hover:border-[#00F0FF]/40 transition-colors">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <FileText className="w-5 h-5 text-[#00F0FF]" />
+              <h5 className="font-semibold text-sm text-[#F5F7FA]">
+                {locale === 'es' ? 'Exportar Informe Cuantitativo (PDF / CSV)' : 'Export Quantitative Report (PDF / CSV)'}
+              </h5>
+              <Badge variant="cyan">Fase 7 Engine</Badge>
+            </div>
+            <p className="text-xs text-[#94A3B8]">
+              {locale === 'es'
+                ? 'Genera informes institucionales auditados con tarjetas ejecutivas, expectativa matemática, drawdown y libro mayor.'
+                : 'Generates audited institutional reports with executive KPIs, mathematical expectancy, drawdown, and trade log.'}
+            </p>
+          </div>
+
+          <Button
+            onClick={() => setExportReportModalOpen(true)}
+            variant="primary"
+            size="sm"
+            leftIcon={<Download className="w-4 h-4" />}
+          >
+            {locale === 'es' ? 'Generar Informe' : 'Generate Report'}
+          </Button>
         </div>
       </Card>
 
@@ -803,6 +842,12 @@ export default function SettingsPage() {
         onCompleted={() => {
           showToast('Migración a la nube completada correctamente');
         }}
+      />
+
+      {/* Export Report Modal (Fase 7) */}
+      <ExportReportModal
+        isOpen={exportReportModalOpen}
+        onClose={() => setExportReportModalOpen(false)}
       />
     </div>
   );

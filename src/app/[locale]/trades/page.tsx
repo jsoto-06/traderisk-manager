@@ -8,7 +8,9 @@ import {
   Clock,
   Trash2,
   AlertTriangle,
+  Download,
 } from 'lucide-react';
+import { ExportReportModal } from '@/components/reports/ExportReportModal';
 import { useLocale } from '@/lib/i18n/useLocale';
 import { useStorage } from '@/hooks/useStorage';
 import type { Trade, Direction, TradeStatus } from '@/lib/types';
@@ -46,6 +48,7 @@ export default function TradesPage() {
   const [closingTrade, setClosingTrade] = useState<Trade | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
 
   // New Trade Form State
   const [formAccountId, setFormAccountId] = useState(activeAccount?.id || '');
@@ -231,13 +234,22 @@ export default function TradesPage() {
           </p>
         </div>
 
-        <Button
-          onClick={openAddModal}
-          variant="primary"
-          leftIcon={<Plus className="w-4 h-4" />}
-        >
-          {t.trades.newTrade}
-        </Button>
+        <div className="flex items-center gap-2.5">
+          <Button
+            onClick={() => setIsExportModalOpen(true)}
+            variant="outline"
+            leftIcon={<Download className="w-4 h-4" />}
+          >
+            {isEs ? 'Exportar' : 'Export'}
+          </Button>
+          <Button
+            onClick={openAddModal}
+            variant="primary"
+            leftIcon={<Plus className="w-4 h-4" />}
+          >
+            {t.trades.newTrade}
+          </Button>
+        </div>
       </div>
 
       {/* Summary KPI Strip */}
@@ -745,6 +757,13 @@ export default function TradesPage() {
           </p>
         </div>
       </Modal>
+
+      {/* Export Report Modal */}
+      <ExportReportModal
+        isOpen={isExportModalOpen}
+        onClose={() => setIsExportModalOpen(false)}
+        defaultAccountId={selectedAccountId !== 'all' ? selectedAccountId : activeAccount?.id}
+      />
     </div>
   );
 }

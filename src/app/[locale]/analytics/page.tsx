@@ -13,6 +13,7 @@ import {
   ArrowRight,
   Sliders,
   Award,
+  Download,
 } from 'lucide-react';
 import { useLocale } from '@/lib/i18n/useLocale';
 import { useStorage } from '@/hooks/useStorage';
@@ -26,6 +27,8 @@ import { Select } from '@/components/ui/Select';
 import { Input } from '@/components/ui/Input';
 import { Badge } from '@/components/ui/Badge';
 import { Alert } from '@/components/ui/Alert';
+import { Button } from '@/components/ui/Button';
+import { ExportReportModal } from '@/components/reports/ExportReportModal';
 import {
   ResponsiveContainer,
   ComposedChart,
@@ -45,6 +48,7 @@ export default function AnalyticsOverviewPage() {
   const [direction, setDirection] = useState<'all' | 'long' | 'short'>('all');
   const [assetFilter, setAssetFilter] = useState<string>('');
   const [strategyFilter, setStrategyFilter] = useState<string>('');
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
 
   const accountToAnalyze = useMemo(() => {
     return accountId === 'all'
@@ -97,7 +101,7 @@ export default function AnalyticsOverviewPage() {
           <p className="text-sm text-[#8899A6] mt-1">{t.analytics.subtitle}</p>
         </div>
 
-        {/* Quick Nav Pills */}
+        {/* Quick Nav Pills & Export Button */}
         <div className="flex flex-wrap items-center gap-2">
           <Link
             href={`/${locale}/analytics`}
@@ -123,6 +127,16 @@ export default function AnalyticsOverviewPage() {
           >
             {t.analytics.propFirmTab}
           </Link>
+
+          <Button
+            size="sm"
+            variant="primary"
+            onClick={() => setIsExportModalOpen(true)}
+            leftIcon={<Download className="w-4 h-4" />}
+            className="text-xs"
+          >
+            {locale === 'es' ? 'Exportar Informe' : 'Export Report'}
+          </Button>
         </div>
       </div>
 
@@ -475,6 +489,13 @@ export default function AnalyticsOverviewPage() {
           </p>
         </Link>
       </div>
+
+      {/* Export Report Modal */}
+      <ExportReportModal
+        isOpen={isExportModalOpen}
+        onClose={() => setIsExportModalOpen(false)}
+        defaultAccountId={accountToAnalyze?.id}
+      />
     </div>
   );
 }
