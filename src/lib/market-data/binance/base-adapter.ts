@@ -70,8 +70,10 @@ export abstract class BinanceBaseAdapter implements MarketDataProvider {
   protected readonly lastProcessedUpdateIds = new Map<string, number>();
   protected readonly lastProcessedExchangeTimes = new Map<string, number>();
 
-  // Upstream message rate limiter (sliding window of timestamps)
+  // Upstream message rate limiter and queue
   protected readonly upstreamMessageLog: number[] = [];
+  protected readonly messageQueue: object[] = [];
+  protected drainTimerId: number | null = null;
 
   // Connection management
   protected reconnectAttempts = 0;
@@ -140,6 +142,7 @@ export abstract class BinanceBaseAdapter implements MarketDataProvider {
 
   /**
    * Subscribes to market data for an array of symbols (e.g. ["BTCUSDT", "ETHUSDT"]).
+   * Chunks large symbol batches into groups of 50 to prevent burst frames.
    */
   async subscribe(symbols: string[]): Promise<void> {
     const newSymbols = symbols.filter((s) => !this.subscribedSymbols.has(s));
@@ -150,12 +153,16 @@ export abstract class BinanceBaseAdapter implements MarketDataProvider {
     }
 
     if (this.connectionStateInternal === 'connected' && this.socket) {
-      const streamParams = newSymbols.map((s) => this.formatStreamName(s));
-      this.sendAppMessage({
-        method: 'SUBSCRIBE',
-        params: streamParams,
-        id: this.nextRequestId++,
-      });
+      const chunkSize = 50;
+      for (let i = 0; i < newSymbols.length; i += chunkSize) {
+        const chunk = newSymbols.slice(i, i + chunkSize);
+        const streamParams = chunk.map((s) => this.formatStreamName(s));
+        this.sendAppMessage({
+          method: 'SUBSCRIBE',
+          params: streamParams,
+          id: this.nextRequestId++,
+        });
+      }
     }
   }
 
@@ -171,12 +178,16 @@ export abstract class BinanceBaseAdapter implements MarketDataProvider {
     }
 
     if (this.connectionStateInternal === 'connected' && this.socket) {
-      const streamParams = toRemove.map((s) => this.formatStreamName(s));
-      this.sendAppMessage({
-        method: 'UNSUBSCRIBE',
-        params: streamParams,
-        id: this.nextRequestId++,
-      });
+      const chunkSize = 50;
+      for (let i = 0; i < toRemove.length; i += chunkSize) {
+        const chunk = toRemove.slice(i, i + chunkSize);
+        const streamParams = chunk.map((s) => this.formatStreamName(s));
+        this.sendAppMessage({
+          method: 'UNSUBSCRIBE',
+          params: streamParams,
+          id: this.nextRequestId++,
+        });
+      }
     }
   }
 
@@ -221,12 +232,23 @@ export abstract class BinanceBaseAdapter implements MarketDataProvider {
   protected abstract parseRawMessage(data: string): MarketPriceQuote | null;
 
   /**
-   * Sends an application-level message upstream adhering strictly to the rate limiter.
-   * Throws Error if the message exceeds upstream rate capacity.
+   * Sends or enqueues an application-level message upstream adhering strictly to the rate limiter.
+   * If rate limit is reached, queues the message and flushes it as soon as the sliding window allows,
+   * completely preventing burst violations against exchange limits.
    */
   protected sendAppMessage(payload: object): boolean {
     if (!this.socket || this.connectionStateInternal !== 'connected') {
       return false;
+    }
+
+    this.messageQueue.push(payload);
+    this.drainMessageQueue();
+    return true;
+  }
+
+  protected drainMessageQueue(): void {
+    if (!this.socket || this.connectionStateInternal !== 'connected') {
+      return;
     }
 
     const now = this.clock.now();
@@ -236,18 +258,23 @@ export abstract class BinanceBaseAdapter implements MarketDataProvider {
       this.upstreamMessageLog.shift();
     }
 
-    if (this.upstreamMessageLog.length >= this.config.maxUpstreamMsgsPerSec) {
-      const err = new Error(
-        `Upstream rate limit exceeded for ${this.id}: ${this.upstreamMessageLog.length}/${this.config.maxUpstreamMsgsPerSec} msgs in last second`
-      );
-      this.notifyError(err);
-      return false;
+    while (
+      this.messageQueue.length > 0 &&
+      this.upstreamMessageLog.length < this.config.maxUpstreamMsgsPerSec
+    ) {
+      const payload = this.messageQueue.shift()!;
+      this.upstreamMessageLog.push(this.clock.now());
+      this.socket.send(JSON.stringify(payload));
     }
 
-    this.upstreamMessageLog.push(now);
-    const serialized = JSON.stringify(payload);
-    this.socket.send(serialized);
-    return true;
+    if (this.messageQueue.length > 0 && this.drainTimerId === null) {
+      const oldest = this.upstreamMessageLog[0] ?? now;
+      const waitMs = Math.max(20, oldest + 1005 - now);
+      this.drainTimerId = this.clock.setTimeout(() => {
+        this.drainTimerId = null;
+        this.drainMessageQueue();
+      }, waitMs);
+    }
   }
 
   protected attachSocketListeners(socket: IWebSocket): void {
@@ -380,6 +407,10 @@ export abstract class BinanceBaseAdapter implements MarketDataProvider {
     if (this.maxAgeTimerId !== null) {
       this.clock.clearTimeout(this.maxAgeTimerId);
       this.maxAgeTimerId = null;
+    }
+    if (this.drainTimerId !== null) {
+      this.clock.clearTimeout(this.drainTimerId);
+      this.drainTimerId = null;
     }
   }
 }

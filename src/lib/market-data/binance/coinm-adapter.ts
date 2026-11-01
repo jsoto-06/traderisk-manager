@@ -76,7 +76,7 @@ export class BinanceCoinmAdapter extends BinanceBaseAdapter {
   constructor(options: BinanceCoinmAdapterOptions = {}) {
     super({
       baseUrl: 'wss://dstream.binance.com/ws',
-      maxUpstreamMsgsPerSec: 10, // Verified official Binance Delivery limit
+      maxUpstreamMsgsPerSec: 8, // Safe margin (8 msgs/s) below Binance Delivery hard limit (10 msgs/s)
       ...options,
     });
   }
@@ -118,6 +118,13 @@ export class BinanceCoinmAdapter extends BinanceBaseAdapter {
     const updateId = data.u;
     const exchangeEventTime = typeof data.E === 'number' ? data.E : undefined;
     const transactionTime = typeof data.T === 'number' ? data.T : undefined;
+    // Universe validation: If st is present, Coin-M must have st === 2
+    if (typeof data.st === 'number' && data.st !== 2) {
+      this.notifyError(
+        new Error(`[${this.id}] Ignored payload for ${data.s} with non-Coin-M universe st=${data.st}`)
+      );
+      return null;
+    }
     const st = typeof data.st === 'number' ? data.st : 2; // Universe 2 for COIN-M
     const reportedPair = typeof data.ps === 'string' ? data.ps.toUpperCase() : symbolDetails.pairSymbol;
 
@@ -166,7 +173,7 @@ export class BinanceCoinmAdapter extends BinanceBaseAdapter {
       this.spikeDetectors.set(rawSymbol, detector);
     }
 
-    const spikeResult = detector.evaluate(mid);
+    const spikeResult = detector.evaluate(mid, updateId);
     const lastReliable = this.lastReliableQuotes.get(symbolDetails.normalizedAsset);
 
     const quote: MarketPriceQuote = {

@@ -45,7 +45,7 @@ export class BinanceSpotAdapter extends BinanceBaseAdapter {
   constructor(options: BinanceSpotAdapterOptions = {}) {
     super({
       baseUrl: 'wss://stream.binance.com:9443/ws',
-      maxUpstreamMsgsPerSec: 5, // Verified official Binance Spot limit
+      maxUpstreamMsgsPerSec: 4, // Safe margin (4 msgs/s) below Binance Spot hard limit (5 msgs/s)
       ...options,
     });
   }
@@ -128,7 +128,7 @@ export class BinanceSpotAdapter extends BinanceBaseAdapter {
       this.spikeDetectors.set(rawSymbol, detector);
     }
 
-    const spikeResult = detector.evaluate(mid);
+    const spikeResult = detector.evaluate(mid, updateId);
     const lastReliable = this.lastReliableQuotes.get(normalizedAsset);
 
     const quote: MarketPriceQuote = {

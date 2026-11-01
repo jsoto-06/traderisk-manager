@@ -143,15 +143,21 @@ export function evaluateFeedStaleness(
   return 'offline';
 }
 
+export interface ConfirmationTick {
+  mid: number;
+  updateId?: number;
+}
+
 /**
  * Heuristic State Machine for Suspect Spike Detection and 3-Tick Confirmation.
  * - Detects jumps > thresholdPercent relative to last confirmed reliable mid price.
  * - Does not silently drop suspect ticks; tags them as suspect.
- * - Requires 3 consecutive ticks within confirmationTolerancePercent to adopt the new price level.
+ * - Requires 3 consecutive ticks with strictly increasing updateId within confirmationTolerancePercent to adopt the new price level.
+ * - Duplicate ticks (identical updateId) are strictly ignored and do not advance the confirmation counter.
  */
 export class SpikeDetector {
   private lastReliableMid: number | null = null;
-  private pendingConfirmationTicks: number[] = [];
+  private pendingConfirmationTicks: ConfirmationTick[] = [];
   private readonly config: SpikeDetectionConfig;
 
   constructor(config: Partial<SpikeDetectionConfig> = {}) {
@@ -171,8 +177,12 @@ export class SpikeDetector {
 
   /**
    * Evaluates an incoming mid price tick against the spike heuristic.
+   * Accepts an optional updateId to guarantee ticks are distinct and strictly increasing.
    */
-  evaluate(currentMid: number): {
+  evaluate(
+    currentMid: number,
+    updateId?: number
+  ): {
     isSpike: boolean;
     confirmedNewReliable: boolean;
     reason?: string;
@@ -209,10 +219,30 @@ export class SpikeDetector {
     }
 
     // Suspect jump detected:
-    // Check if this tick is coherent with pending confirmation buffer
+    // Check if this tick is duplicate/stale relative to pending confirmation ticks
+    if (this.pendingConfirmationTicks.length > 0) {
+      const lastTick = this.pendingConfirmationTicks[this.pendingConfirmationTicks.length - 1];
+      if (updateId !== undefined && lastTick.updateId !== undefined) {
+        if (updateId === lastTick.updateId) {
+          return {
+            isSpike: true,
+            confirmedNewReliable: false,
+            reason: `Duplicate tick with updateId ${updateId} ignored; confirmation pending (${this.pendingConfirmationTicks.length}/${this.config.confirmationTicksRequired})`,
+          };
+        }
+        if (updateId < lastTick.updateId) {
+          return {
+            isSpike: true,
+            confirmedNewReliable: false,
+            reason: `Out-of-order tick updateId ${updateId} < ${lastTick.updateId} ignored; confirmation pending (${this.pendingConfirmationTicks.length}/${this.config.confirmationTicksRequired})`,
+          };
+        }
+      }
+    }
+
+    // First suspect tick: initiate confirmation sequence
     if (this.pendingConfirmationTicks.length === 0) {
-      // First suspect tick: initiate confirmation sequence
-      this.pendingConfirmationTicks.push(currentMid);
+      this.pendingConfirmationTicks.push({ mid: currentMid, updateId });
       return {
         isSpike: true,
         confirmedNewReliable: false,
@@ -221,15 +251,15 @@ export class SpikeDetector {
     }
 
     // Compare with the first tick of the suspected plateau
-    const anchorTick = this.pendingConfirmationTicks[0];
+    const anchorTick = this.pendingConfirmationTicks[0].mid;
     const diffFromAnchorPercent = (Math.abs(currentMid - anchorTick) / anchorTick) * 100;
 
     if (diffFromAnchorPercent <= this.config.confirmationTolerancePercent) {
       // Coherent with the suspected new level
-      this.pendingConfirmationTicks.push(currentMid);
+      this.pendingConfirmationTicks.push({ mid: currentMid, updateId });
 
       if (this.pendingConfirmationTicks.length >= this.config.confirmationTicksRequired) {
-        // Confirmed! 3 consecutive ticks established the new plateau
+        // Confirmed! 3 consecutive distinct ticks established the new plateau
         this.lastReliableMid = currentMid;
         this.pendingConfirmationTicks = [];
         return {
@@ -247,7 +277,7 @@ export class SpikeDetector {
     }
 
     // Incoherent fluctuation: reset confirmation buffer to this new tick
-    this.pendingConfirmationTicks = [currentMid];
+    this.pendingConfirmationTicks = [{ mid: currentMid, updateId }];
     return {
       isSpike: true,
       confirmedNewReliable: false,

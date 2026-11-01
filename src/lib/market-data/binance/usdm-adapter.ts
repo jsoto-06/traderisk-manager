@@ -45,7 +45,7 @@ export class BinanceUsdmAdapter extends BinanceBaseAdapter {
   constructor(options: BinanceUsdmAdapterOptions = {}) {
     super({
       baseUrl: 'wss://fstream.binance.com/public/stream',
-      maxUpstreamMsgsPerSec: 10, // Verified official Binance Futures limit
+      maxUpstreamMsgsPerSec: 8, // Safe margin (8 msgs/s) below Binance Futures hard limit (10 msgs/s)
       ...options,
     });
   }
@@ -87,7 +87,14 @@ export class BinanceUsdmAdapter extends BinanceBaseAdapter {
     const updateId = data.u;
     const exchangeEventTime = typeof data.E === 'number' ? data.E : undefined;
     const transactionTime = typeof data.T === 'number' ? data.T : undefined;
-    const st = typeof data.st === 'number' ? data.st : undefined;
+    // Universe validation: If st is present, USDS-M must have st === 1
+    if (typeof data.st === 'number' && data.st !== 1) {
+      this.notifyError(
+        new Error(`[${this.id}] Ignored payload for ${data.s} with non-USDS-M universe st=${data.st}`)
+      );
+      return null;
+    }
+    const st = typeof data.st === 'number' ? data.st : 1;
 
     // 1. Structural validation
     const priceValidation = validatePriceStructure(bid, ask);
@@ -134,7 +141,7 @@ export class BinanceUsdmAdapter extends BinanceBaseAdapter {
       this.spikeDetectors.set(rawSymbol, detector);
     }
 
-    const spikeResult = detector.evaluate(mid);
+    const spikeResult = detector.evaluate(mid, updateId);
     const lastReliable = this.lastReliableQuotes.get(normalizedAsset);
 
     const quote: MarketPriceQuote = {

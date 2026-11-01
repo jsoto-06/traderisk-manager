@@ -284,6 +284,43 @@ describe('Market Data Infrastructure (Fase 8.1)', () => {
       expect(detector.getLastReliableMid()).toBe(56100); // Updated to new plateau!
     });
 
+    it('strictly requires strictly increasing updateId and ignores duplicate ticks in confirmation sequence', () => {
+      const detector = new SpikeDetector({
+        thresholdPercent: 10,
+        confirmationTicksRequired: 3,
+        confirmationTolerancePercent: 2,
+      });
+      detector.evaluate(50000, 100);
+
+      // Tick 1 (suspect spike): 56,000, updateId 101
+      const r1 = detector.evaluate(56000, 101);
+      expect(r1.isSpike).toBe(true);
+      expect(r1.reason).toContain('1/3');
+
+      // Duplicate tick with same updateId 101: must NOT advance confirmation count!
+      const rDup = detector.evaluate(56000, 101);
+      expect(rDup.isSpike).toBe(true);
+      expect(rDup.reason).toContain('Duplicate tick');
+      expect(detector.getLastReliableMid()).toBe(50000);
+
+      // Out-of-order tick updateId 99: must NOT advance
+      const rOld = detector.evaluate(56050, 99);
+      expect(rOld.isSpike).toBe(true);
+      expect(rOld.reason).toContain('Out-of-order tick');
+      expect(detector.getLastReliableMid()).toBe(50000);
+
+      // Tick 2: updateId 102
+      const r2 = detector.evaluate(56100, 102);
+      expect(r2.isSpike).toBe(true);
+      expect(r2.reason).toContain('2/3');
+
+      // Tick 3: updateId 103 -> Confirmed!
+      const r3 = detector.evaluate(56050, 103);
+      expect(r3.isSpike).toBe(false);
+      expect(r3.confirmedNewReliable).toBe(true);
+      expect(detector.getLastReliableMid()).toBe(56050);
+    });
+
     it('resets confirmation buffer if an intermediate tick fluctuates wildly', () => {
       const detector = new SpikeDetector({
         thresholdPercent: 10,
@@ -375,7 +412,7 @@ describe('Market Data Infrastructure (Fase 8.1)', () => {
       expect(adapter.getLastReliableQuote('BTC/USDT')?.mid).toBe(50000.5);
     });
 
-    it('enforces upstream rate limiter (max 5 msgs/s)', async () => {
+    it('enforces upstream rate limiter (max 4 msgs/s) and cleanly queues bursts', async () => {
       let createdSocket: MockWebSocket | undefined;
       const clock = new MockClock();
       const adapter = new BinanceSpotAdapter({
@@ -390,18 +427,17 @@ describe('Market Data Infrastructure (Fase 8.1)', () => {
       expect(createdSocket).toBeDefined();
       createdSocket!.triggerOpen();
 
-      const errors: Error[] = [];
-      adapter.onError((e) => errors.push(e));
-
-      // Attempt sending 6 subscribe messages in the same second
+      // Send 6 subscribe requests in a burst
       for (let i = 1; i <= 6; i++) {
         await adapter.subscribe([`SYM${i}USDT`]);
       }
 
-      // First 5 messages succeed, 6th is rejected by rate limiter
-      expect(createdSocket!.sentMessages.length).toBe(5);
-      expect(errors.length).toBe(1);
-      expect(errors[0].message).toContain('Upstream rate limit exceeded');
+      // First 4 messages sent immediately (rate limit 4 msgs/s with safety margin)
+      expect(createdSocket!.sentMessages.length).toBe(4);
+
+      // Advance clock past 1 second sliding window: queue drains the remaining 2 messages
+      clock.advance(1100);
+      expect(createdSocket!.sentMessages.length).toBe(6);
     });
 
     it('handles unexpected close with reconnection and symbol re-subscription', async () => {
@@ -502,7 +538,44 @@ describe('Market Data Infrastructure (Fase 8.1)', () => {
       expect(q.updateId).toBe(17242169);
     });
 
-    it('allows up to 10 upstream messages per second', async () => {
+    it('strictly isolates universe: rejects payload with non-USDS-M universe st=2', async () => {
+      let createdSocket: MockWebSocket | undefined;
+      const clock = new MockClock();
+      const adapter = new BinanceUsdmAdapter({
+        clock,
+        wsFactory: (url) => {
+          createdSocket = new MockWebSocket(url);
+          return createdSocket;
+        },
+      });
+
+      const quotes: MarketPriceQuote[] = [];
+      const errors: Error[] = [];
+      adapter.onQuote((q) => quotes.push(q));
+      adapter.onError((e) => errors.push(e));
+
+      await adapter.connect();
+      expect(createdSocket).toBeDefined();
+      createdSocket!.triggerOpen();
+
+      // Emit incoming payload with st: 2 (Coin-M payload)
+      createdSocket!.triggerMessage({
+        e: 'bookTicker',
+        u: 100,
+        s: 'BTCUSD_PERP',
+        b: '50000.0',
+        a: '50001.0',
+        T: 1_700_000_000_000,
+        E: 1_700_000_000_005,
+        st: 2, // Alien universe!
+      });
+
+      expect(quotes.length).toBe(0); // Strictly rejected!
+      expect(errors.length).toBe(1);
+      expect(errors[0].message).toContain('non-USDS-M universe st=2');
+    });
+
+    it('allows up to 8 upstream messages per second with safety margin', async () => {
       let createdSocket: MockWebSocket | undefined;
       const clock = new MockClock();
       const adapter = new BinanceUsdmAdapter({
@@ -517,11 +590,11 @@ describe('Market Data Infrastructure (Fase 8.1)', () => {
       expect(createdSocket).toBeDefined();
       createdSocket!.triggerOpen();
 
-      // Send 10 messages within 1 second
-      for (let i = 1; i <= 10; i++) {
+      // Send 8 messages within 1 second
+      for (let i = 1; i <= 8; i++) {
         await adapter.subscribe([`FUT${i}`]);
       }
-      expect(createdSocket!.sentMessages.length).toBe(10);
+      expect(createdSocket!.sentMessages.length).toBe(8);
     });
   });
 
@@ -588,6 +661,43 @@ describe('Market Data Infrastructure (Fase 8.1)', () => {
       expect(q.st).toBe(2);
       expect(q.pairSymbol).toBe('BTCUSD');
       expect(q.exchangeEventTime).toBe(1_700_000_000_155);
+    });
+
+    it('strictly isolates universe: rejects payload with non-Coin-M universe st=1', async () => {
+      let createdSocket: MockWebSocket | undefined;
+      const clock = new MockClock();
+      const adapter = new BinanceCoinmAdapter({
+        clock,
+        wsFactory: (url) => {
+          createdSocket = new MockWebSocket(url);
+          return createdSocket;
+        },
+      });
+
+      const quotes: MarketPriceQuote[] = [];
+      const errors: Error[] = [];
+      adapter.onQuote((q) => quotes.push(q));
+      adapter.onError((e) => errors.push(e));
+
+      await adapter.connect();
+      expect(createdSocket).toBeDefined();
+      createdSocket!.triggerOpen();
+
+      // Emit incoming payload with st: 1 (USDS-M payload)
+      createdSocket!.triggerMessage({
+        e: 'bookTicker',
+        u: 100,
+        s: 'BTCUSDT',
+        b: '50000.0',
+        a: '50001.0',
+        T: 1_700_000_000_000,
+        E: 1_700_000_000_005,
+        st: 1, // Alien universe!
+      });
+
+      expect(quotes.length).toBe(0); // Strictly rejected!
+      expect(errors.length).toBe(1);
+      expect(errors[0].message).toContain('non-Coin-M universe st=1');
     });
   });
 

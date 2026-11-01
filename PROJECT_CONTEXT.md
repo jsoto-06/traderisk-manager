@@ -1347,21 +1347,26 @@ El **Paso 8.1** ha sido implementado y verificado en su totalidad de acuerdo con
    - `evaluateFeedStaleness`: Evalúa la frescura por instrumento mediante `monotonicReceivedAt` ($\le 5\text{s} \implies \text{LIVE}$, $5\text{s}-30\text{s} \implies \text{STALE}$, $> 30\text{s} \implies \text{OFFLINE}$).
    - `SpikeDetector`: Heurística con umbral configurable ($10\%$) y confirmación por 3 ticks consecutivos coherentes (tolerancia del $2\%$) sin descartar ticks en silencio y conservando `lastReliableQuote` para cálculos críticos.
 3. **Adaptadores de Mercado Públicos (`src/lib/market-data/binance/`)**:
-   - `BinanceBaseAdapter`: Clase abstracta que gestiona la conexión, reconexión exponencial con jitter, reconexión preventiva a las 24 horas y limitador upstream por token bucket.
-   - `BinanceSpotAdapter`: Conecta al endpoint oficial `wss://stream.binance.com:9443/ws`, limita peticiones upstream a 5 msgs/s y gestiona `bookTicker` sin `E` mediante `updateId` y recepción local.
-   - `BinanceUsdmAdapter`: Conecta al endpoint oficial `wss://fstream.binance.com/public/stream`, limita upstream a 10 msgs/s, procesa `E`, `T`, `u` y captura el universo `st = 1`.
-   - `BinanceCoinmAdapter`: Conecta a `wss://dstream.binance.com/ws`, limita upstream a 10 msgs/s, captura `st = 2` y `ps`, y preserva la identidad del contrato distinguiendo perpetuos (`_PERP`) de contratos con vencimiento (`_YYMMDD`, ej. `2026-03-27`).
+   - `BinanceBaseAdapter`: Clase abstracta que gestiona la conexión, reconexión exponencial con jitter, reconexión preventiva a las 24 horas y limitador upstream por token bucket con cola automática de drenaje para absorber ráfagas sin exceder cuotas de exchange.
+   - `BinanceSpotAdapter`: Conecta al endpoint oficial `wss://stream.binance.com:9443/ws`, limita peticiones upstream a 4 msgs/s (margen de seguridad del 20% frente al tope de 5 msgs/s) y gestiona `bookTicker` sin `E` mediante `updateId` y recepción local.
+   - `BinanceUsdmAdapter`: Conecta al endpoint oficial `wss://fstream.binance.com/public/stream`, limita upstream a 8 msgs/s (margen de seguridad del 20% frente al tope de 10 msgs/s), procesa `E`, `T`, `u` y verifica aislamiento del universo de margen `st = 1` rechazando ticks ajenos.
+   - `BinanceCoinmAdapter`: Conecta a `wss://dstream.binance.com/ws`, limita upstream a 8 msgs/s (margen frente al tope de 10 msgs/s), verifica `st = 2` y `ps`, y preserva la identidad del contrato distinguiendo perpetuos (`_PERP`) de contratos con vencimiento (`_YYMMDD`, ej. `2026-03-27`).
    - `createBinanceAdapter`: Fábrica unificada para instanciación desacoplada.
 4. **Punto de Entrada del Módulo (`src/lib/market-data/index.ts`)**:
    - Re-exporta de forma pública tipos, validaciones y adaptadores.
 5. **Suite de Pruebas Unitarias Deterministas (`src/__tests__/market-data.test.ts`)**:
-   - 32 pruebas unitarias automatizadas cubriendo validación estructural, validación temporal, frescura, detector de picos a 3 ticks, adaptadores Spot, USD-M y Coin-M, y el invariante de seguridad que verifica la ausencia de métodos de trading o claves privadas.
+   - 35 pruebas unitarias automatizadas cubriendo validación estructural, validación temporal, frescura, detector de picos a 3 ticks con updateId estrictamente creciente, absorción de ráfagas en cola upstream, aislamiento de universos `st=1`/`st=2`, adaptadores Spot, USD-M y Coin-M, y el invariante de seguridad que verifica la ausencia de métodos de trading o claves privadas.
+6. **Script de Verificación de Integración Pública en Vivo (`src/lib/market-data/verify-live.ts`)**:
+   - Conexión real y paralela a `wss://stream.binance.com:9443/ws`, `wss://fstream.binance.com/public/stream` y `wss://dstream.binance.com/ws`.
+   - Suscripción pública y anónima a `BTCUSDT` (Spot), `BTCUSDT` (USD-M) y `BTCUSD_PERP` (Coin-M).
+   - Verificación de recepción de cotizaciones reales, normalización de activos, preservación de `rawSymbol`, universos `st: 1` y `st: 2`, cálculo de spread, estado `LIVE` y desconexión limpia.
 
 ### 2. Resultados de Validación y Calidad
-- **Vitest**: **297 tests pasados** (26 suites aprobadas, 6 tests omitidos condicionalmente correspondientes a integración remota con Supabase). 0 fallos.
+- **Vitest**: **300 tests pasados** (26 suites aprobadas, 6 tests omitidos condicionalmente correspondientes a integración remota con Supabase). 0 fallos.
 - **ESLint**: 0 errores, 0 advertencias.
 - **TypeScript (`tsc --noEmit`)**: 0 errores de tipado estricto.
 - **Next.js Build**: Compilación Turbopack exitosa de las 37 rutas de la aplicación.
+- **Prueba en Vivo**: Ejecutada con éxito (`All 3 streams received real market quotes successfully!`).
 - **Invariantes de Trading**: 0 endpoints privados, 0 claves privadas requeridas, plataforma estrictamente manual.
 
 ---
