@@ -1196,27 +1196,27 @@ Para evitar heredar picos históricos entre evaluaciones y garantizar que ningun
 Binance WebSocket y REST son servicios públicos que no requieren API Keys privadas. No obstante, **ninguna cotización externa carece de límites técnicos ni se inyecta directamente en los cálculos de riesgo sin una validación previa estricta**:
 
 1. **Límites Verificados del WebSocket de Binance (Diferenciados por Producto según Documentación Oficial)**:
-   - *Aclaración sobre Mensajes por Segundo*: El límite de mensajes entrantes se refiere estrictamente a **mensajes enviados desde el cliente hacia el servidor (upstream / client-to-server)**, como solicitudes JSON de suscripción/desuscripción (`{"method": "SUBSCRIBE", ...}`), tramas Ping o respuestas Pong. **No aplica a los ticks de cotización emitidos por el exchange hacia el cliente (downstream)**, los cuales pueden superar decenas o cientos de eventos por segundo sin restricción. Superar el límite upstream provoca la **desconexión inmediata del socket** y violaciones reiteradas conllevan un **bloqueo temporal de la dirección IP**.
+   - *Aclaración sobre Mensajes por Segundo y Tráfico*: El límite de mensajes entrantes del protocolo se refiere estrictamente a **mensajes enviados desde el cliente hacia el servidor (upstream / client-to-server)**, como solicitudes JSON de suscripción/desuscripción (`{"method": "SUBSCRIBE", ...}`), tramas Ping o respuestas Pong. Dicho límite upstream no restringe los ticks de mercado recibidos desde el exchange hacia el cliente (downstream); no obstante, **el tráfico downstream no debe considerarse ilimitado**: su cadencia y volumen efectivo dependen de la frecuencia intrínseca de actualización de cada stream suscrito (ej. streams de bookTicker o agregación a 100ms / 1000ms), así como de las capacidades de buffer de red del socket y los límites prácticos de procesamiento y renderizado del cliente. Superar el límite upstream provoca la **desconexión inmediata del socket** y violaciones reiteradas conllevan un **bloqueo temporal de la dirección IP**.
    - **Binance Spot WebSocket (`wss://stream.binance.com:9443/ws`)**:
      - Upstream: máximo **5 mensajes del cliente por segundo** por conexión.
      - Streams combinados: máximo de **1,024 streams** por conexión WebSocket.
-     - Frecuencia de conexión: máximo **300 intentos de conexión cada 5 minutos por dirección IP**.
+     - Frecuencia de conexión: máximo **300 intentos de conexión cada 5 minutos por dirección IP** (documentado explícitamente en la especificación oficial de Binance Spot).
      - Desconexión obligatoria: Binance desconecta forzosamente cualquier conexión continua a las **24 horas exactas**.
-     - Protocolo de control: Ping frames enviados periódicamente cada 3 minutos.
+     - Protocolo de control y Heartbeat: el servidor envía una trama `Ping` RFC 6455 cada **20 segundos**. El cliente tiene la **obligación de responder con una trama `Pong`** con la misma carga útil. Si el servidor no recibe respuesta `Pong` en **1 minuto (60 segundos)**, la conexión se desconecta forzosamente.
    - **Binance USD-M Futures WebSocket (`wss://fstream.binance.com/ws`)**:
      - Pool de conexiones y endpoint totalmente segregados de Spot.
      - Upstream: máximo **10 mensajes del cliente por segundo** por conexión (verificado en documentación oficial de Binance Futures).
      - Streams combinados: hasta **1,024 streams** por conexión única.
-     - Frecuencia de conexión: máximo **300 intentos de conexión cada 5 minutos por IP**.
+     - Frecuencia de conexión: regulada por las políticas y pesos de IP específicos de Binance Futures; **no se extrapola el límite de 300 conns/5 min de Spot** sin referencia oficial explícita para este producto.
      - Desconexión obligatoria: corte forzoso automático a las **24 horas continuas**.
-     - Control de Heartbeat: el servidor emite tramas `Ping` RFC 6455 cada 3 minutos; el cliente debe responder con `Pong` antes de 10 minutos para evitar la terminación del socket.
+     - Control de Heartbeat: el servidor emite tramas `Ping` RFC 6455 cada **3 minutos**; el cliente debe responder con `Pong` dentro de un margen de **10 minutos** para evitar la terminación del socket.
    - **Binance Coin-M Futures WebSocket (`wss://dstream.binance.com/ws`)**:
      - Pool de cuotas y endpoint totalmente aislado de Spot y USD-M.
      - Upstream: máximo **10 mensajes del cliente por segundo** por conexión (verificado en documentación oficial de Binance Delivery).
      - Streams combinados: hasta **1,024 streams** por conexión única.
-     - Frecuencia de conexión: máximo **300 intentos de conexión cada 5 minutos por IP**.
+     - Frecuencia de conexión: regulada por las políticas y pesos de IP específicos de Binance Delivery; **no se asume el límite de 300 conns/5 min de Spot** sin especificación oficial particular.
      - Desconexión obligatoria: corte forzoso automático a las **24 horas continuas**.
-     - Control de Heartbeat: tramas `Ping/Pong` RFC 6455 cada 3 minutos con tiempo de gracia de 10 minutos.
+     - Control de Heartbeat: el servidor emite tramas `Ping` RFC 6455 cada **3 minutos**; respuesta `Pong` requerida dentro de **10 minutos** de tiempo de gracia.
 2. **Diferenciación entre `bookTicker` y Flujos de Volumen**:
    - El stream `<symbol>@bookTicker` proporciona exclusivamente: mejor precio de compra (`bidPrice`), cantidad en compra (`bidQty`), mejor precio de venta (`askPrice`) y cantidad en venta (`askQty`). **No incluye volumen negociado en 24h ni volumen de velas**.
    - Para aplicar filtros de picos basados en volumen, se documenta la necesidad de suscribir un stream adicional: `<symbol>@ticker` (resumen 24h con volumen total) o `<symbol>@trade` / `<symbol>@aggTrade` (flujo de operaciones ejecutadas con tamaño real).
@@ -1350,7 +1350,7 @@ Una vez aprobada formalmente la planificación documental, la primera implementa
    - Rechazo estricto de ticks fuera de orden y descarte de timestamps futuros superiores a 2,000 ms.
 5. **Gestión de Conexión y Reconexión Resiliente**:
    - Reconexión automática con retroceso exponencial y jitter ante la desconexión obligatoria de Binance a las 24 horas.
-   - Respuesta automática a tramas Ping/Pong RFC 6455 cada 3 minutos.
+   - Respuesta automática a tramas Ping/Pong RFC 6455 según producto (Spot: Ping del servidor cada 20s y Pong obligatorio en <1 min; USD-M y Coin-M: Ping cada 3 min y Pong requerido en <10 min).
 6. **Ciclo de Estados de Salud del Feed**:
    - Gestión explícita de estados: `LIVE` (verde), `STALE` (amarillo con edad expuesta), `OFFLINE` (rojo con último precio guardado) y `MANUAL` (gris).
 7. **Suite de Pruebas Unitarias del Adaptador y Validaciones**:
