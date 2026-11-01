@@ -82,6 +82,7 @@ export interface Trade {
   entryPrice: number;
   exitPrice?: number;
   stopLoss: number;
+  initialStopLoss?: number;   // Original Stop Loss at entry (preserves baseline for Dynamic Open Risk)
   takeProfit: number;
   size: number;
   openDate: string;
