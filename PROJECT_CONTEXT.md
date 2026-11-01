@@ -1379,9 +1379,9 @@ El Paso 8.1 ha quedado formalmente cerrado con éxito y verificado en vivo. Conf
 
 ### 1. Auditoría de Tipos y Compatibilidad con Interfaces Existentes
 1. **Estado Contable y Operativo (`src/lib/types.ts`)**:
-   - `Trade`: Modela posiciones con `status: 'open'`, `entryPrice`, `stopLoss`, `takeProfit`, `size`, `direction` ('long' | 'short'), `asset`, `commissions` (apertura).
-   - `Account`: Contiene `balance` (saldo cerrado liquidado), `equity` (equidad dinámica), `currency`, `dailyLossLimit`, `maxDrawdown`, `drawdownType`.
-   - Compatibilidad: El motor de valuación consumirá estas estructuras de forma no destructiva sin modificar su esquema ni invalidar el almacenamiento local o sincronizado.
+   - `Trade`: Modela posiciones con `status: 'open'`, `entryPrice`, `stopLoss`, `takeProfit`, `size`, `direction` ('long' | 'short'), `asset`, `commissions` (apertura). Para trazabilidad de Dynamic Open Risk, admite opcionalmente `initialStopLoss` / `originalSL` (preservando el stop de apertura si el trader ajusta el stop vigente).
+   - `Account`: Contiene `balance` (saldo cerrado liquidado), `equity` (equidad dinámica), `currency`, `dailyLossLimit`, `maxDrawdown`, `drawdownType`. Para validación de apalancamiento y préstamo, admite opcionalmente `marginMode`, `borrowCapacityAvailable` y `dailyBorrowRate`.
+   - Compatibilidad: El motor de valuación consumirá estas estructuras de forma no destructiva sin modificar su esquema obligatorio ni invalidar el almacenamiento local o sincronizado de las Fases 1 a 7.
 2. **Infraestructura de Mercado (`src/lib/market-data/types.ts`)**:
    - Suministra cotizaciones `MarketPriceQuote` (`bid`, `ask`, `mid`, `spread`, `updateId`, `exchangeEventTime`, `status`, `isSpike`, `lastReliableQuote`, `st`, `pairSymbol`).
    - Se alimenta de los adaptadores de Binance Spot, USD-M y Coin-M con segregación estricta de universos.
@@ -1416,12 +1416,26 @@ No se aplica una fórmula universal; cada instrumento se rige por su modelo fina
 #### A. Spot (Cripto & Acciones Cash)
 * **Long (cierre a Bid)**:
   $$\text{GrossPnL} = (\text{Bid} - \text{EntryPrice}) \times \text{Size}$$
-* **Short Spot (Regla Estricta de Préstamo)**:
-  - En mercados de contado (*cash spot*), no es legalmente posible vender en corto sin un mecanismo de préstamo de valores (*margin borrowing*).
-  - **Invariante Cuantitativa**: Si la posición es `short` y la cuenta/instrumento es de contado puro (`marginMode === 'cash'` o sin apalancamiento/préstamo habilitado), la valuación se bloquea con el error `INOPERABLE_SPOT_SHORT_WITHOUT_BORROWING`.
-  - Si dispone de préstamo de margen habilitado:
+* **Short Spot (Validación Rigurosa y Préstamo Obligatorio)**:
+  - En mercados de contado (*cash spot*), la venta en corto física es inexistente sin un contrato y provisión efectiva de préstamo de valores (*securities lending / margin borrow*).
+  - **Invariante Cuantitativa y Criterios Concurrentes de Validación**:
+    Tener `marginMode !== 'cash'` por sí solo **NO es suficiente** para autorizar la valoración de una posición corta en spot. El motor exige la verificación simultánea de tres condiciones independientes:
+    1. **Capacidad Real de Préstamo (`borrowCapacityAvailable`)**: La cuenta o broker debe reportar una línea de préstamo disponible suficiente para cubrir el nominal prestado de la posición ($\text{borrowCapacityAvailable} \ge \text{Size}$).
+    2. **Habilitación Explícita del Instrumento (`isMarginShortable === true`)**: El instrumento/par específico debe estar expresamente habilitado para operativa corta/margen en el exchange/broker (no todos los pares de contado son prestables ni admiten margen).
+    3. **Disponibilidad de Parámetros de Financiación (`dailyBorrowRate`)**: La tasa de interés de préstamo diaria debe estar provista, ser finita y no negativa (`dailyBorrowRate != null && Number.isFinite(dailyBorrowRate) && dailyBorrowRate >= 0`).
+  - **Tratamiento ante Fallo de Validación**:
+    Si cualquiera de estos tres requisitos no puede ser verificado fehacientemente, el motor **NUNCA computará un PnL flotante ficticio ni asumirá préstamo gratuito**. Se emitirá:
+    - `status: 'inoperable'`
+    - `isValuationAvailable: false`
+    - `errorCode` específico tipado:
+      - `'INOPERABLE_SPOT_SHORT_CASH_ACCOUNT'`: Cuenta clasificada estrictamente como contado (`marginMode === 'cash'`).
+      - `'INOPERABLE_SPOT_SHORT_INSTRUMENT_NOT_SHORTABLE'`: Activo/par no habilitado para venta corta en margen.
+      - `'INOPERABLE_SPOT_SHORT_BORROW_CAPACITY_EXCEEDED'`: La línea de crédito/préstamo disponible es inferior al tamaño requerido.
+      - `'INOPERABLE_SPOT_SHORT_BORROW_RATE_UNAVAILABLE'`: Tasa de préstamo diaria no disponible o inválida.
+    - `netFloatingPnL: undefined`: Se excluye del sumatorio de equidad dinámica para no falsear el balance ni los límites de riesgo con operaciones de contado imposibles de liquidar.
+  - **Valoración si se Verifican Todos los Requisitos Concurrentes**:
     $$\text{GrossPnL} = (\text{EntryPrice} - \text{Ask}) \times \text{Size}$$
-    $$\text{BorrowingCosts} = \text{DailyBorrowRate} \times \text{DaysHeld} \times \text{NotionalBorrowed}$$
+    $$\text{BorrowingCosts} = \text{DailyBorrowRate} \times \text{DaysHeld} \times (\text{EntryPrice} \times \text{Size})$$
 * **Costes de Salida y PnL Neto**:
   $$\text{EstimatedExitCosts} = \text{ClosingFeeRate} \times \text{ExitPrice} \times \text{Size} + \text{BorrowingCosts}$$
   $$\text{NetFloatingPnL} = \text{GrossPnL} - \text{EstimatedExitCosts}$$
@@ -1467,32 +1481,67 @@ No se aplica una fórmula universal; cada instrumento se rige por su modelo fina
 
 ### 4. Dynamic Open Risk: Riesgo Inicial vs Riesgo Remanente
 
-Se formaliza la separación conceptual y cuantitativa entre el riesgo contraído al entrar al mercado y el riesgo de equidad remanente desde la cotización actual:
+Se formaliza la separación conceptual y cuantitativa entre el riesgo contraído al entrar al mercado y el riesgo de equidad remanente desde la cotización actual, diferenciando estrictamente el Stop Loss original del vigente y evaluando a precios de salida reales (**Bid para Long** y **Ask para Short**):
 
-1. **Riesgo Inicial de Capital (`CapitalRiskAtSL`)**:
-   - Mide la pérdida potencial de capital respecto al precio de entrada si el mercado retrocede al Stop Loss:
-     - Long: $\text{CapitalRiskAtSL} = \max\left(0, (\text{EntryPrice} - \text{StopLoss}) \times \text{Size} \times \text{Multiplier} \times \text{FXRate}\right)$
-     - Short: $\text{CapitalRiskAtSL} = \max\left(0, (\text{StopLoss} - \text{EntryPrice}) \times \text{Size} \times \text{Multiplier} \times \text{FXRate}\right)$
-   - **Propiedad Fundamental**: Si el SL ha sido ajustado a zona de beneficios ($\text{SL} > \text{Entry}$ para Long o $\text{SL} < \text{Entry}$ para Short), el capital inicial de entrada está 100% protegido:
-     $$\text{CapitalRiskAtSL} \equiv 0.00$$
-   - Nunca arroja valores negativos.
-2. **Riesgo Remanente de Equidad (`MarkToStopDistance` / `RemainingEquityRisk`)**:
-   - Mide la caída monetaria desde el precio actual de mercado (Bid para Long, Ask para Short) hasta el SL (devolución de beneficio flotante acumulado):
-     - Long: $\text{MarkToStopDistance} = \max\left(0, (\text{Bid} - \text{StopLoss}) \times \text{Size} \times \text{Multiplier} \times \text{FXRate}\right)$
-     - Short: $\text{MarkToStopDistance} = \max\left(0, (\text{StopLoss} - \text{Ask}) \times \text{Size} \times \text{Multiplier} \times \text{FXRate}\right)$
-   - Si el mercado ya cruzó el SL, $\text{MarkToStopDistance} \equiv 0.00$.
-3. **Costes Proyectados de Salida (`EstimatedExitCosts`)**:
+1. **Diferenciación entre Stop Loss Original (`originalSL`) y Vigente (`currentSL`)**:
+   - `originalSL`: Nivel de stop registrado en el momento de apertura del trade (`initialStopLoss`).
+   - `currentSL`: Nivel de stop dinámico o modificado activamente por el trader (`currentStopLoss`).
+   - **Riesgo Inicial al Stop Original (`InitialCapitalRisk`)**: Cuantifica el riesgo monetario asumido en la entrada:
+     - Long: $\text{InitialCapitalRisk} = \max\left(0, (\text{EntryPrice} - \text{originalSL}) \times \text{Size} \times \text{Multiplier} \times \text{FXRate}\right)$
+     - Short: $\text{InitialCapitalRisk} = \max\left(0, (\text{originalSL} - \text{EntryPrice}) \times \text{Size} \times \text{Multiplier} \times \text{FXRate}\right)$
+
+2. **Riesgo Vigente de Capital (`CapitalRiskAtSL`)**:
+   - Mide la pérdida potencial de capital respecto al precio de entrada si el mercado retrocede al Stop Loss actual (`currentSL`):
+   - **Long (cierre evaluado a Bid)**:
+     - Si $\text{currentSL} \ge \text{EntryPrice}$ (Stop Loss en Break-Even o en beneficios $\implies$ capital de entrada 100% protegido):
+       $$\text{CapitalRiskAtSL}_{\text{Long}} \equiv 0.00$$
+     - Si el mercado ya cruzó o alcanzó el SL ($\text{Bid} \le \text{currentSL}$):
+       El stop ya ha sido rebasado; el riesgo futuro de stop se anula pues la pérdida ya forma parte del PnL flotante actual a precio Bid:
+       $$\text{CapitalRiskAtSL}_{\text{Long}} \equiv 0.00$$
+     - En caso de riesgo activo ($\text{Bid} > \text{currentSL}$ y $\text{currentSL} < \text{EntryPrice}$):
+       $$\text{CapitalRiskAtSL}_{\text{Long}} = (\text{EntryPrice} - \text{currentSL}) \times \text{Size} \times \text{Multiplier} \times \text{FXRate}$$
+   - **Short (cierre evaluado a Ask)**:
+     - Si $\text{currentSL} \le \text{EntryPrice}$ (Stop Loss en Break-Even o en beneficios $\implies$ capital de entrada 100% protegido):
+       $$\text{CapitalRiskAtSL}_{\text{Short}} \equiv 0.00$$
+     - Si el mercado ya cruzó o alcanzó el SL ($\text{Ask} \ge \text{currentSL}$):
+       El stop ya ha sido rebasado; el riesgo futuro de stop se anula:
+       $$\text{CapitalRiskAtSL}_{\text{Short}} \equiv 0.00$$
+     - En caso de riesgo activo ($\text{Ask} < \text{currentSL}$ y $\text{currentSL} > \text{EntryPrice}$):
+       $$\text{CapitalRiskAtSL}_{\text{Short}} = (\text{currentSL} - \text{EntryPrice}) \times \text{Size} \times \text{Multiplier} \times \text{FXRate}$$
+   - **Propiedad Fundamental**: Nunca arroja valores negativos.
+
+3. **Riesgo Remanente de Equidad / Devolución de Beneficio (`MarkToStopDistance`)**:
+   - Mide la caída monetaria desde el precio de mercado actual (**Bid para Long**, **Ask para Short**) hasta el Stop Loss vigente (`currentSL`), representando la devolución de beneficios flotantes acumulados o la extensión del drawdown hasta el stop:
+   - **Long (cierre a Bid)**:
+     - Si $\text{Bid} \le \text{currentSL}$ (el precio de mercado actual ya cruzó o alcanzó el stop):
+       $$\text{MarkToStopDistance}_{\text{Long}} \equiv 0.00$$
+     - En caso contrario ($\text{Bid} > \text{currentSL}$):
+       $$\text{MarkToStopDistance}_{\text{Long}} = (\text{Bid} - \text{currentSL}) \times \text{Size} \times \text{Multiplier} \times \text{FXRate}$$
+   - **Short (cierre a Ask)**:
+     - Si $\text{Ask} \ge \text{currentSL}$ (el precio de mercado actual ya cruzó o alcanzó el stop):
+       $$\text{MarkToStopDistance}_{\text{Short}} \equiv 0.00$$
+     - En caso contrario ($\text{Ask} < \text{currentSL}$):
+       $$\text{MarkToStopDistance}_{\text{Short}} = (\text{currentSL} - \text{Ask}) \times \text{Size} \times \text{Multiplier} \times \text{FXRate}$$
+
+4. **Tratamiento de Posiciones sin Stop Loss (`currentSL == null`)**:
+   - Si la posición carece de Stop Loss registrado, se clasifica como:
+     - `isStopLossConfigured: false`
+     - `CapitalRiskAtSL: undefined` (riesgo de capital no acotado por stop)
+     - `MarkToStopDistance: undefined`
+   - El motor emite una alerta visual explícita en el dashboard indicando exposición sin cobertura.
+
+5. **Costes Proyectados de Salida (`EstimatedExitCosts`)**:
    $$\text{EstimatedExitCosts} = \text{ClosingCommissionsAtSL} + \text{SlippageAtSL} + \text{ProjectedFunding}$$
-4. **Exposición Total de Capital (`EstimatedTotalCapitalRisk`)**:
-   $$\text{EstimatedTotalCapitalRisk} = \text{CapitalRiskAtSL} + \text{EstimatedExitCosts}$$
-5. **Exposición Total de Equidad Abierta (`EstimatedTotalOpenRisk`)**:
-   $$\text{EstimatedTotalOpenRisk} = \text{MarkToStopDistance} + \text{EstimatedExitCosts}$$
+
+6. **Exposición Total Consolidada**:
+   - **Exposición Total de Capital**: $\text{EstimatedTotalCapitalRisk} = \text{CapitalRiskAtSL} + \text{EstimatedExitCosts}$
+   - **Exposición Total de Equidad Abierta**: $\text{EstimatedTotalOpenRisk} = \text{MarkToStopDistance} + \text{EstimatedExitCosts}$
 
 ---
 
 ### 5. Integración con Prop Firm y Daily Loss Intradía Riguroso
 
-Para impedir penalizar la jornada actual por pérdidas acumuladas en días previos o duplicar pérdidas ya cerradas, el cálculo de **Pérdida Diaria** se define mediante la variación intradía exacta:
+Para impedir penalizar la jornada actual por pérdidas acumuladas en días previos o duplicar pérdidas ya cerradas, el cálculo de **Pérdida Diaria** se define mediante la variación intradía exacta y la neutralización estricta de flujos de caja:
 
 1. **Línea Base al Inicio del Día (`StartOfDay`)**:
    - Registrada en la hora de reinicio oficial (`dailyResetHour`, ej. 17:00 EST para CME):
@@ -1504,15 +1553,41 @@ Para impedir penalizar la jornada actual por pérdidas acumuladas en días previ
      $$\Delta \text{ClosedPnL}_{\text{today}} = \sum_{t \in \text{TradesClosedToday}} (\text{trade.result} - \text{trade.commissions})$$
    - **Variación de Posiciones Abiertas (`DeltaOpenFloatingToday`)**:
      $$\Delta \text{OpenFloating}_{\text{today}} = \text{CurrentOpenFloating} - \text{StartOfDayOpenFloating}$$
-     *Ejemplo de Aislamiento*: Si una posición Long acarreaba un flotante de $-\$500$ al inicio de la jornada y actualmente marca $-\$600$, el impacto atribuible a la jornada de hoy es exclusivamente $-\$100$, no $-\$600$.
-3. **Pérdida Diaria Total y Verificación de Infracción**:
+3. **Flujos de Caja Intradía (Neutralización de Depósitos y Retiradas)**:
+   - Los ingresos o egresos de capital no constituyen beneficio ni pérdida operativa:
+     $$\text{NetCashFlows}_{\text{today}} = \text{DepositsToday} - \text{WithdrawalsToday}$$
+4. **Pérdida Diaria Total y Verificación de Infracción**:
    $$\text{DailyNetPerformance} = \Delta \text{ClosedPnL}_{\text{today}} + \Delta \text{OpenFloating}_{\text{today}}$$
    $$\text{DailyLossTotal} = \max(0, -\text{DailyNetPerformance})$$
    $$\text{RemainingDailyLoss} = \max(0, \text{DailyLossLimitAmount} - \text{DailyLossTotal})$$
    $$\text{isBreached} = \text{DailyLossTotal} \ge \text{DailyLossLimitAmount}$$
-4. **Prueba de Consistencia Global**:
-   $$\text{DailyNetPerformance} \equiv \text{CurrentEquity} - \text{StartOfDayEquity} - \text{NetDepositsToday}$$
-   Esta equivalencia matemática garantiza que ninguna pérdida se compute dos veces ni se hereden pérdidas de sesiones anteriores.
+5. **Prueba de Consistencia Global Analítica**:
+   $$\text{DailyNetPerformance} \equiv (\text{CurrentEquity} - \text{StartOfDayEquity}) - \text{NetCashFlows}_{\text{today}}$$
+
+6. **Análisis Riguroso de Escenarios Intradía**:
+   - **A. Posiciones Anteriores al Reset con Pérdidas Flotantes (Aislamiento de Drawdown Previo)**:
+     - Una posición arrastra $-\$500$ de flotante al inicio de la jornada ($\text{StartOfDayOpenFloating} = -\$500$).
+     - Durante la sesión actual, el precio empeora y el flotante pasa a $-\$700$.
+     - $\Delta \text{OpenFloating}_{\text{today}} = -\$700 - (-\$500) = -\$200$.
+     - $\text{DailyLossTotal} = \$200$. Los $-\$500$ anteriores pertenecen a la sesión precedente y no consumen la cuota de pérdida de hoy.
+   - **B. Recuperación Intradía de Pérdidas Anteriores (Intraday Recovery)**:
+     - La misma posición con $-\$500$ iniciales se recupera en la jornada actual y cotiza a $-\$100$.
+     - $\Delta \text{OpenFloating}_{\text{today}} = -\$100 - (-\$500) = +\$400$.
+     - $\text{DailyNetPerformance} = +\$400 \implies \text{DailyLossTotal} = \max(0, -400) = \$0.00$.
+     - La recuperación genera un delta intradía favorable y la cuota diaria de pérdida permanece al 100% disponible sin penalizaciones fantasmas.
+   - **C. Cierre Intradía de Posiciones que Tenían Pérdidas Previas (Prueba de CERO Doble Contabilización)**:
+     - Una posición con $-\$500$ de flotante inicial se cierra a las 11:00 AM con un resultado ejecutado de $-\$600$ (incluyendo comisiones).
+     - Al liquidarse:
+       - PnL realizado cerrado: $\Delta \text{ClosedPnL}_{\text{today}} = -\$600$.
+       - PnL flotante actual: La posición ya no está abierta, por lo que su flotante actual es $\$0.00$:
+         $$\Delta \text{OpenFloating}_{\text{today}} = 0.00 - (-\$500) = +\$500$$
+       - Rendimiento neto del día:
+         $$\text{DailyNetPerformance} = \Delta \text{ClosedPnL}_{\text{today}} + \Delta \text{OpenFloating}_{\text{today}} = -\$600 + (+\$500) = -\$100$$
+       - Pérdida diaria computada: $\text{DailyLossTotal} = \max(0, -(-100)) = \$100$.
+       - **Demostración**: La pérdida previa de $-\$500$ que ya había sido absorbida en la sesión anterior queda exactamente compensada por la liberación del flotante ($+\$500$). El cargo computable contra el límite de hoy es estrictamente el deterioro intradía adicional ($-\$100$). **Se elimina de forma absoluta la doble contabilización**.
+   - **D. Depósitos y Retiradas Intradía**:
+     - *Depósito*: Si el usuario añade $\$5,000$ de fondos, $\text{CurrentEquity}$ sube en $\$5,000$. Sin embargo, al sustraer $\text{NetCashFlows} = +\$5,000$, $\text{DailyNetPerformance}$ no se altera, impidiendo que un ingreso monetario oculte una pérdida operativa o resetee artificialmente el límite de pérdida diaria.
+     - *Retirada*: Si el usuario extrae $-\$2,000$, $\text{CurrentEquity}$ disminuye en $\$2,000$. Al sustraer $\text{NetCashFlows} = -\$2,000$, $\text{DailyNetPerformance}$ permanece neutralizada ($\Delta \text{Equity} - (-2000) = -2000 + 2000 = 0$), impidiendo que una extracción de fondos dispare falsamente la regla de Daily Loss.
 
 ---
 
@@ -1563,21 +1638,30 @@ Se formaliza el ciclo contable antes y después del cierre de una posición abie
 
 ### 9. Plan de Pruebas Unitarias Deterministas (`src/__tests__/valuation-engine.test.ts`)
 
-Se diseñará una suite de pruebas que valide exhaustivamente:
-1. **Long Spot y USD-M**: Valoración a Bid deduciendo comisiones de salida.
-2. **Short Spot**:
-   - Bloqueo con `INOPERABLE_SPOT_SHORT_WITHOUT_BORROWING` en cuentas de contado puro.
-   - Valoración a Ask deduciendo costes de préstamo en cuentas con margen habilitado.
+Se diseñará una suite de pruebas deterministas que valide exhaustivamente todos los escenarios cuantitativos del motor:
+1. **Long Spot y USD-M**: Valoración rigurosa a precio Bid deduciendo comisiones estimadas de salida.
+2. **Short Spot Endurecido (Validación y Préstamo)**:
+   - 2.a: Bloqueo en cuenta clasificada como contado puro (`marginMode === 'cash'`) emitiendo `errorCode: 'INOPERABLE_SPOT_SHORT_CASH_ACCOUNT'`.
+   - 2.b: Bloqueo cuando el par o instrumento específico no esté habilitado para préstamo/margen en el broker (`errorCode: 'INOPERABLE_SPOT_SHORT_INSTRUMENT_NOT_SHORTABLE'`).
+   - 2.c: Bloqueo si la capacidad de préstamo disponible en la cuenta es insuficiente para el tamaño vendido (`errorCode: 'INOPERABLE_SPOT_SHORT_BORROW_CAPACITY_EXCEEDED'`).
+   - 2.d: Bloqueo si la tasa de préstamo diaria no está disponible o no es finita (`errorCode: 'INOPERABLE_SPOT_SHORT_BORROW_RATE_UNAVAILABLE'`).
+   - 2.e: Comprobación de que ante cualquier fallo de validación, `netFloatingPnL` es estrictamente `undefined` y `isValuationAvailable: false` (garantía de **CERO PnL ficticio**).
+   - 2.f: Valoración válida a precio Ask deduciendo comisiones y costes diarios de préstamo acumulados cuando los 3 criterios se verifican concurrentemente.
 3. **Coin-M Inverso**:
-   - Asimetría no lineal del PnL en BTC.
-   - Conversión exacta a USD y EUR.
-4. **Daily Loss Intradía**:
-   - Aislamiento de pérdidas flotantes previas al inicio de la sesión.
-   - Verificación de que trades cerrados durante el día y variación de abiertos satisfacen $\text{DailyNetPerformance} \equiv \text{Equity}_{\text{now}} - \text{Equity}_{\text{start}}$.
-5. **Dynamic Open Risk**:
-   - Long y Short con SL en beneficios ($\text{CapitalRiskAtSL} \equiv 0.00$).
-   - $\text{MarkToStopDistance}$ cuantificando la devolución de beneficio flotante.
-   - Mercado que cruzó el SL ($\text{MarkToStopDistance} \equiv 0.00$).
+   - Asimetría no lineal del PnL en la criptomoneda base (ej. BTC).
+   - Conversión analítica exacta a USD y EUR con tasas FX directas e indirectas.
+4. **Daily Loss Intradía Ampliado (Aislamiento, Recuperación, Cierres y Flujos de Caja)**:
+   - 4.a (*Posiciones Anteriores al Reset con Flotante Negativo*): Posición heredada con $-\$500$ al reset; al descender a $-\$700$ intradía, el Daily Loss computa exclusivamente $\Delta = -\$200$, aislando los $-\$500$ precedentes.
+   - 4.b (*Recuperación Intradía de Pérdidas Anteriores*): Posición heredada con $-\$500$ se recupera a $-\$100$; $\Delta = +\$400 \implies \text{DailyLossTotal} = \$0.00$, sin distorsión ni penalización.
+   - 4.c (*Cierre Intradía de Posiciones con Pérdidas Previas*): Posición con $-\$500$ flotante inicial cerrada a $-\$600$ realizado; la salida del flotante $(+\$500)$ compensa la pérdida realizada $(-\$600)$, imputando estrictamente $-\$100$ a la sesión actual (prueba determinista de **CERO doble contabilización**).
+   - 4.d (*Depósitos y Retiradas de Efectivo Intradía*): Verificación de que depósitos (ej. $+\$5,000$) y retiradas (ej. $-\$2,000$) son exactamente neutralizados por $\text{NetCashFlows}_{\text{today}}$, garantizando que los flujos de capital no maquillen drawdowns ni provoquen violaciones indebidas de Daily Loss.
+   - 4.e (*Identidad Contable Global en Portafolio Mixto*): Coexistencia simultánea de trades cerrados hoy, posiciones heredadas abiertas y flujos de caja, validando al céntimo la igualdad canónica:
+     $$\text{DailyNetPerformance} \equiv \Delta \text{ClosedPnL}_{\text{today}} + \Delta \text{OpenFloating}_{\text{today}} \equiv (\text{CurrentEquity} - \text{StartOfDayEquity}) - \text{NetCashFlows}_{\text{today}}$$
+5. **Dynamic Open Risk Riguroso (Long Bid / Short Ask, SL Original vs Actual, BE y Stop Cruzado)**:
+   - 5.a (*SL Original vs Vigente*): Distinción explícita de `InitialCapitalRisk` frente a `CapitalRiskAtSL`.
+   - 5.b (*SL en Beneficios / Break-Even*): Long (Bid) y Short (Ask) con SL en zona de beneficios, verificando que $\text{CapitalRiskAtSL} \equiv 0.00$ mientras $\text{MarkToStopDistance}$ cuantifica la devolución del beneficio flotante.
+   - 5.c (*Mercado que Cruzó el Stop*): Long con $\text{Bid} \le \text{currentSL}$ o Short con $\text{Ask} \ge \text{currentSL}$, verificando que tanto $\text{CapitalRiskAtSL} \equiv 0.00$ como $\text{MarkToStopDistance} \equiv 0.00$ al haber sido ya penetrado el nivel de stop.
+   - 5.d (*Posición sin Stop Loss*): Reporte estructurado de `isStopLossConfigured: false` y riesgo `undefined` con advertencia de riesgo no mitigado.
 6. **Conciliación Contable**:
    - $\text{Equity}_{\text{pre}} \equiv \text{Balance}_{\text{post}}$ ante ejecución perfecta.
    - Descomposición exacta de `ExecutionVariance` en slippage y comisiones reales.
