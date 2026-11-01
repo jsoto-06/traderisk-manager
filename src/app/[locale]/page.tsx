@@ -179,11 +179,19 @@ export default function DashboardPage() {
 
       {/* KPI Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Balance */}
+        {/* Balance & Equity */}
         <StatCard
           title={t.dashboard.balance}
           value={formatCurrency(activeAccount.balance, activeAccount.currency, locale)}
-          subtitle={`Equidad: ${formatCurrency(activeAccount.equity, activeAccount.currency, locale)}`}
+          subtitle={
+            openTrades.length > 0
+              ? isEs
+                ? `Equidad: ${formatCurrency(activeAccount.equity, activeAccount.currency, locale)} (Modo manual · Sin feed en vivo)`
+                : `Equity: ${formatCurrency(activeAccount.equity, activeAccount.currency, locale)} (Manual mode · No live feed)`
+              : isEs
+              ? `Equidad: ${formatCurrency(activeAccount.equity, activeAccount.currency, locale)} (Sin posiciones abiertas)`
+              : `Equity: ${formatCurrency(activeAccount.equity, activeAccount.currency, locale)} (No open positions)`
+          }
           icon={<Wallet className="w-5 h-5" />}
         />
 
@@ -219,11 +227,15 @@ export default function DashboardPage() {
           icon={<CheckCircle2 className="w-5 h-5 text-[#00F0FF]" />}
         />
 
-        {/* Open Risk */}
+        {/* Open Risk (Potential Loss to SL) */}
         <StatCard
           title={t.dashboard.openRisk}
           value={formatCurrency(openRiskAmount, activeAccount.currency, locale)}
-          subtitle={`${openTrades.length} operación(es) abierta(s)`}
+          subtitle={
+            isEs
+              ? `${openTrades.length} op. abierta(s) · Riesgo potencial a SL`
+              : `${openTrades.length} open pos. · Potential risk to SL`
+          }
           change={{
             value: `${openRiskPercent.toFixed(2)}%`,
             isPositive: openRiskPercent < activeAccount.riskPerTrade * 2,

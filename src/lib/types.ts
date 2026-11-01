@@ -266,3 +266,35 @@ export interface ValidationResult<T> {
   data?: T;
   errors?: string[];
 }
+
+// ---------------------------------------------------------------------------
+// Market Feeds & Floating Equity Architecture (Fase 6.1 Preparation)
+// ---------------------------------------------------------------------------
+export interface MarketPriceQuote {
+  asset: string;
+  bid: number;
+  ask: number;
+  mid: number;
+  timestamp: string;
+}
+
+export interface FloatingPositionValuation {
+  tradeId: string;
+  asset: string;
+  direction: Direction;
+  size: number;
+  entryPrice: number;
+  markPrice: number;
+  unrealizedPnL: number;
+  unrealizedPnLPercent: number;
+}
+
+export interface AccountValuationSnapshot {
+  accountId: string;
+  balance: number;
+  unrealizedPnL: number;
+  equity: number; // balance + unrealizedPnL
+  openRiskToStopLoss: number;
+  mode: 'manual_closed' | 'realtime_feed';
+  timestamp: string;
+}
