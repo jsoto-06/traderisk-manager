@@ -958,105 +958,221 @@ En la Fase 7 se desarrolló el motor institucional de generación y exportación
 
 ---
 
-## 23. FASE 8 — Planificación Técnica: Integración de Feeds de Mercado en Tiempo Real (En Planificación)
+## 23. FASE 8 — Planificación Técnica: Integración de Feeds de Mercado en Tiempo Real (Revisada y Corregida)
 
-En la Fase 8 se aborda la integración técnica de cotizaciones en tiempo real para el cálculo de Floating PnL, valoración de equidad dinámica (`Equity = Balance + FloatingPnL`) y monitoreo de riesgo flotante intra-trade.
-
-### 1. Auditoría de Contratos Existentes (`src/lib/types.ts`)
-- **`MarketPriceQuote`**:
-  - *Estado actual*: Cuenta con `asset`, `bid`, `ask`, `mid` y `timestamp`.
-  - *Carencias identificadas*: Falta `source` (`'binance' | 'finnhub' | 'twelvedata' | 'manual'`), `status` (`'live' | 'stale' | 'delayed' | 'offline' | 'manual'`), `latencyMs`, `markPrice` (esencial para perpetuos) y `quoteCurrency` para conversiones multivariadas.
-- **`FloatingPositionValuation`**:
-  - *Estado actual*: Almacena `tradeId`, `asset`, `direction`, `size`, `entryPrice`, `markPrice`, `unrealizedPnL`, `unrealizedPnLPercent`.
-  - *Carencias identificadas*: Falta diferenciar `unrealizedGrossPnL` de `unrealizedNetPnL` (incluyendo comisiones estimadas de salida y funding acumulado), `openRiskToStopLoss`, `liquidationPrice`, `multiplier` o `pipValue`, tasa de conversión de divisa (`fxRate`) y estado de frescura de la cotización (`quoteStatus`).
-- **`AccountValuationSnapshot`**:
-  - *Estado actual*: `accountId`, `balance`, `unrealizedPnL`, `equity`, `openRiskToStopLoss`, `mode`, `timestamp`.
-  - *Carencias identificadas*: Falta registrar `peakEquity` (vital para trailing drawdown en retos de prop firm), `floatingDrawdownAmount` y `floatingDrawdownPercent`, `usedMargin`, `marginLevelPercent` y diagnóstico de salud del feed (`feedHealth`: porcentaje de posiciones con feed en vivo vs stale o manual).
-
-### 2. Arquitectura Desacoplada de Proveedores de Datos (Patrón Adapter)
-- **Interfaz Universal `MarketDataProvider`**:
-  - Define métodos obligatorios: `connect()`, `disconnect()`, `subscribe(symbols)`, `unsubscribe(symbols)`, `getQuote(symbol)`, `getBatchQuotes(symbols)`.
-  - Emisión desacoplada de eventos: `onQuote(quote)`, `onError(error)`, `onStatusChange(status)`.
-- **Servicio Coordinador `MarketFeedManager`**:
-  - Enrutamiento inteligente según el formato del símbolo (`BTC/USDT` -> Binance Provider; `EUR/USD` -> Forex Provider; `AAPL` -> Stocks Provider).
-  - Respaldo automático (*fallback*): ante fallo de WebSocket, degradación a REST polling o último precio en caché marcado como `STALE`.
-  - Desacoplamiento total de la UI: los componentes de React (`useMarketFeed`, `Dashboard`, `TradesPage`) consumen la fachada `MarketFeedService` sin conocer los detalles de conexión de cada API subyacente.
-
-### 3. Evaluación y Selección de Proveedores de Mercado
-- **Criptomonedas (Spot y Perpetuos)**:
-  - **Proveedor Recomendado**: **Binance Public WebSocket & REST API**.
-  - *Protocolo*: WebSocket público (`wss://stream.binance.com:9443/ws` para Spot; `wss://fstream.binance.com/ws` para USD-M Futures).
-  - *Autenticación*: 100% pública. Cero claves API, sin costes y sin requerir cuentas de usuario.
-  - *Latencia*: 50ms - 250ms con streams agregados (`<symbol>@bookTicker` y `<symbol>@markPrice`).
-  - *Ventaja Clave*: Proporciona el `markPrice` oficial y el `fundingRate` en tiempo real de los contratos perpetuos.
-- **Divisas (Forex)**:
-  - **Conversión de Divisas de Liquidación**: **Frankfurter API** (Open-source, gratuita, sin rate-limit severo, respaldada por datos del Banco Central Europeo).
-  - **Cotización en Tiempo Real de Pares**: **Finnhub** (WebSocket gratuito con token) o **Twelve Data** (REST polling en plan gratuito).
-- **Acciones y CFDs de Índices**:
-  - **Proveedor Recomendado**: **Finnhub** (cobertura en tiempo real de acciones US vía WebSocket público con clave de desarrollador gratuita) complementado con **Yahoo Finance** a través de un Route Handler interno (`/api/market-data/quote`) para acciones europeas y cotizaciones EOD.
-
-### 4. Evaluación Técnica: WebSocket frente a REST Polling
-- **Estrategia Híbrida**:
-  - **WebSocket Primario**: Para activos de alta volatilidad (Cripto y Forex activo). Comunicación bidireccional, bajo consumo de ancho de banda y push inmediato.
-  - **REST Polling Adaptativo**: Para acciones o como mecanismo de seguridad ante cortes de red. Intervalo adaptativo: 5 segundos cuando la pestaña está activa (`document.visibilityState === 'visible'`), espaciado a 30-60 segundos cuando la pestaña pasa a segundo plano, y apagado completo si no hay posiciones abiertas.
-  - **Políticas de Resiliencia**:
-    - Reconexión con retroceso exponencial: $t = \min(1000 \cdot 2^k, 30000) \text{ ms}$ con jitter aleatorio.
-    - Heartbeat activo (ping/pong) cada 30 segundos. Si no se reciben mensajes en 60 segundos, transición a estado de reconexión.
-- **Coste de Infraestructura**: **0 € / mes**. Todo el stack propuesto opera dentro de los planes gratuitos públicos y APIs abiertas de nivel institucional.
-
-### 5. Fórmulas de Floating PnL Multi-Activo
-- **Spot (Crypto / Stocks)**:
-  - $\text{Gross PnL} = (\text{CurrentPrice} - \text{EntryPrice}) \cdot \text{Size} \cdot (\text{direction} == \text{'long'} ? 1 : -1) \cdot \text{FXRate}$
-  - $\text{Net PnL} = \text{Gross PnL} - \text{OpenCommissions} - \text{EstimatedCloseCommissions}$
-- **Perpetuos (Crypto)**:
-  - Valuado sobre **Mark Price** (no Last Trade) para inmunidad frente a mechas ilíquidas:
-  - $\text{Gross PnL} = (\text{MarkPrice} - \text{EntryPrice}) \cdot \text{Size} \cdot (\text{direction} == \text{'long'} ? 1 : -1) \cdot \text{FXRate}$
-  - $\text{Net PnL} = \text{Gross PnL} + \text{AccruedFunding} - \text{Commissions}$
-- **Forex (Lotes & Pips)**:
-  - $\text{Pips} = (\text{CurrentPrice} - \text{EntryPrice}) / \text{PipSize} \cdot (\text{direction} == \text{'long'} ? 1 : -1)$
-  - $\text{Floating PnL} = \text{Pips} \cdot \text{PipSize} \cdot (\text{Lots} \cdot \text{LotUnits}) \cdot \text{FXRate}$
-- **Futuros (Puntos & Tick Value)**:
-  - $\text{Points} = (\text{CurrentPrice} - \text{EntryPrice}) \cdot (\text{direction} == \text{'long'} ? 1 : -1)$
-  - $\text{Floating PnL} = \text{Points} \cdot \text{Multiplier} \cdot \text{Contracts} \cdot \text{FXRate}$
-
-### 6. Demarcación Rigurosa de Variables Financieras
-- **Balance Realizado**: Estrictamente inmutable ante ticks de mercado. Solo se modifica mediante operaciones formalmente cerradas o transacciones de depósito/retiro.
-- **Equity Dinámico**: $\text{Equity} = \text{Balance} + \sum \text{FloatingNetPnL}_i$.
-- **Open Risk**: Riesgo pre-calculado máximo hasta el Stop Loss original ($\sum |\text{Entry} - \text{SL}| \cdot \text{Factor}$).
-- **Floating Open Risk**: Riesgo dinámico desde la cotización actual hasta el Stop Loss. Si el precio se mueve a favor y el SL está en breakeven, el riesgo abierto dinámico es cero.
-- **Drawdown Flotante vs Cerrado**:
-  - En cuentas de Prop Firm con regla de **Trailing Drawdown Intra-Trade** (Topstep, Apex, FTMO), el pico de equidad se actualiza en tiempo real: $\text{PeakEquity} = \max(\text{PeakEquity}, \text{Equity})$.
-  - Se calcula el margen exacto restante hasta la violación del piso de drawdown flotante en tiempo real.
-
-### 7. Sistema de Alertas de Riesgo Configurable
-- **Monitores Activos**:
-  1. *Límite de Pérdida Diaria*: Alertas tempranas al 70%, 85% y 95% del cupo diario.
-  2. *Piso de Drawdown de Prop Firm*: Aviso crítico ante proximidad al umbral de descalificación de la cuenta.
-  3. *Proximidad al Stop Loss*: Alerta cuando el precio actual penetra el 85% de la distancia hacia el SL.
-  4. *Alerta de Liquidación Estimada*: Para posiciones apalancadas en cripto o futuros con margen aislado/cruzado.
-  5. *Alerta de Cotización Desactualizada (Stale Data)*: Notificación cuando una cotización excede el TTL máximo sin refresco.
-- **Canales de Alerta**: Barra de advertencia en cabecera, indicadores cromáticos en tarjetas de trade y alertas sonoras opcionales sintéticas con la Web Audio API (cero dependencias externas).
-
-### 8. Estrategia Offline-First y Salud de Cotizaciones
-- **Ciclo de Estados del Feed**:
-  - `LIVE` (Verde): Recibido en los últimos 15 segundos.
-  - `STALE` (Amarillo): Cotización válida recibida hace entre 15s y 120s; la interfaz expone la antigüedad exacta (ej. *"hace 35s"*).
-  - `OFFLINE` (Rojo): Sin conexión de red (`navigator.onLine === false`) o proveedor desconectado por más de 120s. Muestra el último precio registrado con indicador explícito de desconexión.
-  - `MANUAL` (Gris): Modo por defecto cuando no se utiliza feed en vivo o el usuario prefiere ingresar cotizaciones manualmente.
-- **Regla Fundamental de Integridad Cuantitativa**: **CERO invención o interpolación de cotizaciones**. Si no hay señal de mercado, el sistema jamás inventa números ni altera balances. El modo manual siempre permanece disponible como alternativa de control.
-
-### 9. Seguridad y Privacidad
-- **Solo Lectura (Read-Only)**: Exclusivamente suscripción a canales públicos de cotizaciones. No se implementa ninguna capacidad de ejecución de órdenes ni conexión con credenciales de trading privado.
-- **Cero Exposición de Claves**: Para proveedores que requieran token de desarrollador (Finnhub, Twelve Data), las llamadas se realizan a través de Next.js Route Handlers en el backend (`/api/market-data/...`), manteniendo las variables de entorno en el servidor y fuera del bundle del navegador.
-- **Aislamiento en Persistencia**: Las cotizaciones de mercado son datos efímeros en memoria y nunca contaminan LocalStorage ni generan conflictos en la sincronización de Supabase.
+> [!IMPORTANT]
+> **ESTADO DE LA FASE 8**: Fase en planificación y especificación técnica exhaustiva. **No se permite la implementación de código hasta la aprobación final de este documento.** El alcance es exclusivamente una plataforma analítica y de control de riesgo para trading manual, **NO un bot de ejecución de órdenes**.
 
 ---
 
-## 24. Próximos Pasos (Implementación Fase 8)
+### 1. Auditoría de Proveedores de Mercado y Condiciones Reales Verificadas
 
-* Creación de los módulos adaptadores de feed en `src/lib/market-data/` (`types.ts`, `binance-provider.ts`, `forex-provider.ts`, `market-feed-manager.ts`).
-* Implementación de los cálculos de Floating PnL y valuación de posiciones en `src/lib/risk-engine/floating-valuation.ts`.
-* Creación del hook de React `useMarketFeed()` para suscripción y actualización reactiva en el cliente.
-* Integración del selector de modo (Feed en Vivo vs Modo Manual) y visualización de salud del feed en el Dashboard y la página de Trades.
-* Desarrollo del sistema de alertas de riesgo configurable en tiempo real.
-* Suite de pruebas unitarias y de integración para proveedores, reconexiones, cálculo de equidad y resiliencia offline.
+Se corrigen y auditan los supuestos de proveedores externos. Las APIs financieras imponen restricciones estrictas y segregadas que impiden tratarlas como fuentes genéricas:
+
+#### A. Binance: Condiciones Reales por Producto, Conexión e IP
+- **Binance Spot (API v3)**:
+  - *REST Rate Limit*: Ponderación de peticiones (`REQUEST_WEIGHT`) de **1,200 por minuto por IP** (expuesta en cabecera `x-mbx-used-weight-1m`; hasta 6,000 en endpoints optimizados). Endpoint de tickers: `/api/v3/ticker/bookTicker` (peso 2 con símbolo; peso 4 sin símbolo).
+  - *WebSocket Streams*: `wss://stream.binance.com:9443/ws` o `/stream`. Límite de **5 mensajes entrantes por segundo** por conexión. Máximo 1,024 streams combinados por socket. Límite de **300 intentos de conexión cada 5 minutos por IP**.
+  - *Desconexión Programada*: Binance desconecta forzosamente cualquier conexión WebSocket viva al cumplir **24 horas continuas**. El cliente debe capturar el evento `onclose` e implementar reconexión automática sin pérdida de estado.
+- **Binance USD-M Futures (Contratos Perpetuos Lineales en USDT/USDC)**:
+  - *Límites Separados*: Posee un pool de cuotas independiente de Spot. REST rate limit de **2,400 weight por minuto por IP**.
+  - *WebSocket Futures*: `wss://fstream.binance.com/ws`. Stream oficial de precio de marca: `<symbol>@markPrice` o `<symbol>@markPrice@1s` (emite Mark Price, Index Price y Funding Rate estimado cada 1s o 3s).
+  - *Control de Heartbeat a Nivel de Transporte (RFC 6455)*: El servidor de Binance envía tramas `Ping` cada 3 minutos. El navegador web responde automáticamente con tramas `Pong`. Si la conexión no registra actividad en 10 minutos, se aborta.
+- **Binance Coin-M Futures (Contratos Perpetuos Inversos)**:
+  - Endpoint separado: `wss://dstream.binance.com/ws`. Valuación no lineal basada en valor nominal por contrato en USD y liquidación en la criptomoneda subyacente.
+
+#### B. Finnhub: Líneas de Cobertura y Restricciones del Plan Gratuito
+- *Límites REST*: **60 peticiones de API por minuto** por clave de desarrollador.
+- *Acciones EE.UU.*: Acceso WebSocket en tiempo real disponible en plan gratuito (`wss://ws.finnhub.io?token=...`). Los datos provienen del exchange **Cboe BZX** (volumen representativo de ~10-12% del mercado consolidado de EE.UU., no es el SIP Tape consolidado completo).
+- *Mercado Forex*: El WebSocket en tiempo real de Forex **NO está disponible en el plan gratuito** de Finnhub (restringido a planes pagos institucionales). En la capa gratuita, Forex se restringe a peticiones REST con retraso o datos interbancarios de cierre de sesión.
+- *Índices Bursátiles*: Los índices oficiales (S&P 500, Nasdaq 100, DAX) están sujetos a estrictos derechos de licencia de propiedad intelectual; en la capa gratuita presentan **retraso de 15 minutos o cotizaciones estáticas EOD**.
+- *Conclusión Operativa*: **No asumir que los datos en tiempo real de Forex e Índices son gratuitos ni de streaming continuo**.
+
+#### C. Frankfurter API: Alcance y Limitación Explícita
+- *Fuente*: Publicación diaria de tipos de cambio de referencia del Banco Central Europeo (BCE).
+- *Actualización*: Únicamente **una vez al día, a las ~16:00 CET de los días laborables**.
+- *Regla Arquitectónica Obligatoria*: Frankfurter **SOLO se utilizará para matrices de conversión de divisa de liquidación contable de referencia** (ej. convertir una cuenta en EUR a métricas consolidadas en USD). **QUEDA ESTRICTAMENTE PROHIBIDO utilizar Frankfurter como feed Forex intradía** o para posiciones activas de scalping/day-trading.
+
+#### D. Matriz Verificada de Proveedores de Mercado
+
+| Proveedor | Mercado Cubierto | Protocolo | Frecuencia Real | Retraso | Coste | Límites Verificados | Restricciones Operativas |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Binance Spot** | Crypto Spot | WS (`@bookTicker`) + REST | Push continuo (~100ms) / REST 1s | 0 ms (Tiempo Real) | **0 €** (Público) | 1,200 weight/min REST. 5 msgs/s WS. Max 300 conns / 5 min. | Desconexión obligatoria a las 24h. Restricción regional en ciertas IPs de EE.UU. |
+| **Binance USD-M** | Crypto Perpetuos | WS (`@markPrice@1s`) | Push cada 1s o 3s | 0 ms (Tiempo Real) | **0 €** (Público) | 2,400 weight/min REST (pool separado de Spot). | Requiere capturar `markPrice` y `fundingRate` devengado. Desconexión forzosa cada 24h. |
+| **Finnhub (Free)** | Acciones EE.UU. | WebSocket (`trades`) | Push por transacción | 0 ms (Cboe BZX) | **0 €** (Con token) | 60 llamadas REST/min. Conexión WS única por token. | Cobertura Cboe BZX (no SIP consolidado). Forex en WS bloqueado en plan free. |
+| **Twelve Data (Free)**| Forex y Acciones | REST Polling | Mínimo 1 minuto | 0 a 15 min según activo | **0 €** (Con token) | 8 créditos/minuto, 800 peticiones/día. | Cuota muy reducida; solo apto para swing trading o comprobación puntual. |
+| **Frankfurter** | Matrices FX BCE | REST | 1 vez al día (~16:00 CET) | Diario (EOD) | **0 €** (Open API) | Sin límite práctico | **Exclusivamente para conversión contable de divisas base**. Prohibido para trading intradía. |
+| **Manual Input** | Todos los activos | Entrada de usuario | Bajo demanda | N/A (Offline) | **0 €** | N/A | Modo soberano disponible siempre sin red ni dependencias. |
+
+---
+
+### 2. Precisión Rigurosa de las Fórmulas Financieras
+
+El motor multiasset existente de TradeRisk Manager ([`src/lib/risk-engine/`](file:///c:/Users/Jony/Documents/traderisk-manager/src/lib/risk-engine/index.ts)) no se modifica. La capa de valuación flotante implementa las fórmulas exactas respetando convenciones por instrumento:
+
+#### A. Floating Gross PnL (Resultado Bruto Flotante)
+- **Criptomonedas Spot y Acciones Tradicionales**:
+  $$PnL_{\text{gross}} = \begin{cases} (\text{CurrentBid} - \text{EntryPrice}) \cdot \text{Size} \cdot \text{FXRate} & \text{si Long} \\ (\text{EntryPrice} - \text{CurrentAsk}) \cdot \text{Size} \cdot \text{FXRate} & \text{si Short} \end{cases}$$
+- **Criptomonedas Perpetuas Lineales (USD-M)**:
+  $$PnL_{\text{gross}} = \begin{cases} (\text{MarkPrice} - \text{EntryPrice}) \cdot \text{Size} \cdot \text{FXRate} & \text{si Long} \\ (\text{EntryPrice} - \text{MarkPrice}) \cdot \text{Size} \cdot \text{FXRate} & \text{si Short} \end{cases}$$
+- **Criptomonedas Perpetuas Inversas (Coin-M)**:
+  $$PnL_{\text{gross}} = \begin{cases} \left(\frac{1}{\text{EntryPrice}} - \frac{1}{\text{MarkPrice}}\right) \cdot \text{Contracts} \cdot \text{ContractMultiplier} \cdot \text{CoinPrice} \cdot \text{FXRate} & \text{si Long} \\ \left(\frac{1}{\text{MarkPrice}} - \frac{1}{\text{EntryPrice}}\right) \cdot \text{Contracts} \cdot \text{ContractMultiplier} \cdot \text{CoinPrice} \cdot \text{FXRate} & \text{si Short} \end{cases}$$
+- **Forex (Lotes Estándar, Mini, Micro y Cross-Currency)**:
+  - Pips recorridos: $Pips = \frac{\text{CurrentPrice} - \text{EntryPrice}}{\text{PipSize}} \cdot (\text{direction} == \text{'long'} ? 1 : -1)$
+  - Valor monetario del Pip en divisa de cotización: $\text{PipValue}_{\text{quote}} = \text{PipSize} \cdot \text{Lots} \cdot \text{LotUnits}$
+  - PnL bruto en divisa de cotización: $PnL_{\text{gross, quote}} = Pips \cdot \text{PipValue}_{\text{quote}}$
+  - Conversión a divisa de la cuenta: $PnL_{\text{gross}} = PnL_{\text{gross, quote}} \cdot \text{FXRate}_{\text{quote} \to \text{account}}$
+- **Futuros e Índices (Tick Size, Tick Value y Multiplicador)**:
+  - Puntos recorridos: $Points = (\text{CurrentPrice} - \text{EntryPrice}) \cdot (\text{direction} == \text{'long'} ? 1 : -1)$
+  - Ticks recorridos: $Ticks = \frac{Points}{\text{TickSize}}$
+  - $PnL_{\text{gross}} = Ticks \cdot \text{TickValue} \cdot \text{Contracts} \cdot \text{FXRate}$
+
+#### B. Funding Acumulado Realmente Devengado (`AccruedFunding`)
+No se utiliza una tasa continua estimada. El funding se calcula sumando exclusivamente los **eventos de liquidación que han ocurrido efectivamente** mientras la posición ha permanecido abierta:
+$$\text{AccruedFunding} = \sum_{k=1}^{M} \text{Payment}_k$$
+$$\text{Payment}_k = \begin{cases} -(\text{MarkPrice}_k \cdot \text{Size}_k \cdot \text{FundingRate}_k \cdot \text{FXRate}_k) & \text{si Long} \\ +(\text{MarkPrice}_k \cdot \text{Size}_k \cdot \text{FundingRate}_k \cdot \text{FXRate}_k) & \text{si Short} \end{cases}$$
+- $M$: número de liquidaciones transcurridas (ej. timestamps oficiales a las 00:00, 08:00, 16:00 UTC en contratos de 8 horas).
+- Si la tasa $\text{FundingRate}_k$ es positiva, los Longs pagan (-), los Shorts cobran (+). Si la tasa es negativa, los Longs cobran (+), los Shorts pagan (-).
+
+#### C. Comisiones Estimadas de Cierre (`EstimatedCloseCommissions`)
+- Modelo porcentual (ad valorem): $\text{Fee}_{\text{close}} = \text{CurrentPrice} \cdot \text{Size} \cdot \frac{\text{commissionPercent}}{100} \cdot \text{FXRate}$.
+- Modelo fijo por contrato / lote / acción: $\text{Fee}_{\text{close}} = \text{FixedFeePerUnit} \cdot \text{Units} \cdot \text{FXRate}$.
+
+#### D. Floating Net PnL (Resultado Neto Flotante)
+$$PnL_{\text{net}} = PnL_{\text{gross}} + \text{AccruedFunding} - \text{Commissions}_{\text{open}} - \text{EstimatedCloseCommissions}$$
+- Las comisiones de apertura (`Commissions_open`) ya fueron registradas en el trade; si no se habían deducido, se descuentan aquí asegurando que las comisiones totales se resten exactamente una única vez.
+
+#### E. Dynamic Open Risk (Riesgo Abierto Dinámico)
+- **Definición Rigurosa**: Pérdida potencial desde la cotización actual de mercado hasta el nivel de Stop Loss, considerando el coste de cierre.
+- Distancia en puntos/precio:
+  $$\Delta_{\text{SL}} = (\text{CurrentPrice} - \text{StopLoss}) \cdot (\text{direction} == \text{'long'} ? 1 : -1)$$
+- Pérdida monetaria potencial:
+  $$\text{DynamicOpenRisk} = \max\left(0, \Delta_{\text{SL}} \cdot \text{Multiplier} \cdot \text{Size} \cdot \text{FXRate} + \text{EstimatedCloseCommissions}\right)$$
+- **Regla Fundamental contra Riesgo Negativo**:
+  - Si el precio se ha movido favorablemente y el Stop Loss se ha colocado en breakeven o en beneficios (trailing stop):
+    - La pérdida de capital respecto a la entrada es estrictamente **$0.00**.
+    - **Bajo ninguna circunstancia se contabiliza un valor negativo como riesgo o pérdida**. Un Stop Loss en beneficio representa capital protegido, no un riesgo negativo.
+
+#### F. Used Margin y Margin Level
+- $\text{UsedMargin} = \sum_{i \in \text{OpenPositions}} \frac{\text{NominalValue}_i}{\text{Leverage}_i} \cdot \text{FXRate}_i$
+- $\text{FreeMargin} = \text{Equity} - \text{UsedMargin}$
+- $\text{MarginLevelPercent} = \begin{cases} \frac{\text{Equity}}{\text{UsedMargin}} \cdot 100 & \text{si } \text{UsedMargin} > 0 \\ \infty & \text{si } \text{UsedMargin} = 0 \end{cases}$
+
+---
+
+### 3. Dinámica de Equity y Modalidades de Drawdown
+
+#### A. Invarianza del Balance Realizado y Cálculo de Equidad
+- $\text{Equity} = \text{Balance} + \sum_{i \in \text{OpenPositions}} PnL_{\text{net}, i}$.
+- **El Balance realizado es estrictamente inmutable frente a cotizaciones de mercado**. Ningún tick en vivo altera el saldo contable de la cuenta.
+- **Manejo de Valoraciones Incompletas (`isPartial: true`)**: Si para alguna posición abierta no existe cotización o el feed está en estado `OFFLINE`, la valoración se etiqueta explícitamente como incompleta:
+  - La interfaz muestra un indicador visible: `Equidad parcial (1 posición sin cotización activa)`.
+
+#### B. Regla Estricta de Actualización y Persistencia de `PeakEquity`
+- **Condición de Actualización**: **QUEDA PROHIBIDO actualizar `PeakEquity` con cotizaciones STALE, OFFLINE o valoraciones parciales (`isPartial: true`)**.
+  - `PeakEquity` solo se incrementa cuando **el 100% de las posiciones abiertas poseen cotizaciones `LIVE` válidas y verificadas**.
+- **Persistencia entre Sesiones y Dispositivos**:
+  - `peakEquity` se almacena en el modelo de datos de la cuenta (`Account.peakEquity?: number` y `Account.peakEquityUpdatedAt?: string`).
+  - Se persiste en LocalStorage y se propaga en la sincronización con Supabase bajo la regla Last-Write-Wins (LWW) auditada en la Fase 4.2.
+  - Al recargar la página o abrir la aplicación en otro dispositivo, `peakEquity` se recupera fielmente sin reiniciarse a cero ni al balance actual.
+
+#### C. Soporte Multi-Modelo para Drawdown de Prop Firms
+No se asume una regla única. TradeRisk Manager modela las 4 variantes de la industria:
+1. **Static Drawdown**: Piso de pérdida fijado permanentemente respecto al capital inicial:
+   $$\text{Floor} = \text{InitialCapital} \cdot (1 - \text{MaxDrawdownPercent} / 100)$$
+2. **Trailing Balance Drawdown**: El piso se eleva únicamente cuando se cierran operaciones con beneficio en balance realizado:
+   $$\text{Floor}_t = \max(\text{Floor}_{t-1}, \text{Balance}_t - \text{MaxDrawdownAmount})$$
+3. **Trailing Equity Intra-Trade Drawdown (Apex, Topstep)**: El piso asciende en tiempo real con cada tick positivo de la equidad flotante, pero nunca desciende si la equidad retrocede:
+   $$\text{PeakEquity} = \max(\text{PeakEquity}, \text{Equity}_{\text{live}})$$
+   $$\text{Floor} = \text{PeakEquity} - \text{MaxDrawdownAmount}$$
+4. **Trailing End-of-Day (EOD) Drawdown (FTMO, MFF)**: El piso se recalcula exclusivamente con la equidad registrada al cierre de la sesión diaria oficial (ej. 17:00 EST):
+   - Las fluctuaciones intra-trade que se recuperen antes del cierre del día no penalizan el piso de drawdown para el día siguiente.
+
+---
+
+### 4. Ciclo de Vida y Calidad de las Cotizaciones
+
+Cada cotización recibida en el sistema implementa la interfaz enriquecida:
+```typescript
+export interface MarketPriceQuote {
+  asset: string;              // "BTC/USDT", "EUR/USD", "AAPL"
+  provider: ProviderId;       // "binance", "finnhub", "twelvedata", "manual"
+  market: string;             // "crypto_perpetual", "forex_spot", "us_equity"
+  quoteCurrency: string;      // "USDT", "USD", "EUR"
+  bid: number;
+  ask: number;
+  mid: number;
+  markPrice?: number;         // Obligatorio en perpetuos
+  receivedAt: string;         // ISO UTC local de llegada al cliente
+  providerTimestamp: string;  // ISO UTC emitido por el servidor del proveedor
+  ageMs: number;              // Antigüedad calculada en milisegundos
+  status: FeedStatus;         // "live" | "stale" | "offline" | "manual"
+}
+```
+
+#### Umbrales Configurables por Mercado y Proveedor
+Los umbrales no son rígidos; se configuran según la volatilidad y la naturaleza del canal:
+- **Criptomonedas (WebSocket Push)**:
+  - `LIVE`: $\text{ageMs} < 5,000 \text{ ms}$ (5 segundos).
+  - `STALE`: $5,000 \text{ ms} \le \text{ageMs} < 30,000 \text{ ms}$.
+  - `OFFLINE`: $\text{ageMs} \ge 30,000 \text{ ms}$ o desconexión de socket.
+- **Acciones y Forex (REST Polling / WebSockets de baja frecuencia)**:
+  - `LIVE`: $\text{ageMs} < 15,000 \text{ ms}$ (15 segundos).
+  - `STALE`: $15,000 \text{ ms} \le \text{ageMs} < 60,000 \text{ ms}$.
+  - `OFFLINE`: $\text{ageMs} \ge 60,000 \text{ ms}$.
+- **Prohibición Terminante**: **Bajo ningún concepto se presentarán precios antiguos como cotizaciones actuales**. Si una cotización es `STALE` u `OFFLINE`, la interfaz muestra su antigüedad explícita y su estado cromático (amarillo/rojo).
+
+---
+
+### 5. Sistema de Alertas de Riesgo Informativas y Preventivas
+
+- **Principio Rector**: Las alertas son **exclusivamente informativas y de supervisión de disciplina**. Recomiendan al trader revisar su posición o valorar actuaciones manuales.
+- **Límites de Seguridad Absolutos**:
+  - **PROHIBIDO**: Envío de órdenes a brokers o exchanges.
+  - **PROHIBIDO**: Apertura automática de operaciones.
+  - **PROHIBIDO**: Cierre forzado automático de operaciones.
+  - **PROHIBIDO**: Manejo de permisos o credenciales de trading y retirada.
+- **Monitores Preventivos Configurables**:
+  1. *Daily Loss Limit Warning*: Alertas configurables al 70%, 85% y 95% del límite diario de pérdida.
+  2. *Trailing Drawdown Floor Warning*: Alerta ante cercanía a menos de un 15% del piso de descalificación de prop firm.
+  3. *Stop Loss Proximity*: Aviso preventivo cuando el precio de mercado ha recorrido más del 85% de la distancia entre la entrada y el Stop Loss.
+  4. *Liquidation Proximity*: Alerta urgente si la distancia entre el `MarkPrice` y el precio de liquidación es inferior al 5% en operaciones apalancadas.
+  5. *Feed Degradation Warning*: Aviso si una cotización de una posición abierta supera el umbral `STALE`.
+
+---
+
+### 6. Arquitectura de Seguridad, Privacidad y Offline-First
+
+1. **Canal de Solo Lectura (Read-Only)**:
+   - Solo se consumen endpoints públicos de datos de mercado. No se almacena ninguna clave privada de broker ni se solicitan permisos de ejecución.
+2. **Protección de Tokens de Proveedores**:
+   - Para proveedores que requieran token de desarrollador (Finnhub, Twelve Data), las llamadas se realizan a través de Next.js Route Handlers en el backend (`/api/market-data/...`). Las variables de entorno permanecen en el servidor y nunca se transmiten al cliente.
+3. **Inmunidad de la Base de Datos**:
+   - Las cotizaciones en vivo residen estrictamente en la memoria volátil de React. **Nunca se sincronizan con Supabase ni se persisten en LocalStorage**, evitando congestión de I/O y falsos conflictos LWW.
+4. **Preservación Offline-First**:
+   - Si se desconecta la red (`navigator.onLine === false`), la aplicación conmuta inmediatamente a modo offline sin bloquear la navegación ni las herramientas analíticas. El usuario puede alternar en cualquier momento al modo manual de fijación de precios.
+
+---
+
+### 7. Plan de Validación y Pruebas Requeridas
+
+Antes de dar por finalizada la fase cuando se autorice su ejecución, se exigirá la siguiente batería de pruebas automatizadas:
+1. *Pruebas Unitarias de Fórmulas Financieras*:
+   - Valuación exacta de Spot, Perpetuos (USD-M y Coin-M), Forex (Lotes estándar/mini/micro, cross-rates) y Futuros (Tick value).
+   - Invarianza de $DynamicOpenRisk = 0.00$ cuando el Stop Loss protege el capital en beneficios (cero riesgo negativo).
+   - Cálculo discreto de eventos devengados de Funding con nominal, tasas positivas/negativas y períodos reales.
+2. *Pruebas de Ciclo de Vida y Estados de Cotización*:
+   - Transiciones verificadas: `LIVE` $\to$ `STALE` $\to$ `OFFLINE` $\to$ `LIVE` según el reloj y latencia de red.
+   - Verificación de que `PeakEquity` no se actualiza cuando existen cotizaciones `STALE`, `OFFLINE` o `isPartial: true`.
+3. *Pruebas de Adaptadores y Reconexión*:
+   - Simulación de desconexión de WebSocket a las 24 horas y reanudación con backoff exponencial.
+   - Mocking de respuestas REST de proveedores verificando rate-limits y manejo de error HTTP 429 sin colapso de la aplicación.
+4. *Pruebas de Integración de Alertas*:
+   - Disparo exacto de advertencias informativas en los umbrales configurados (70%, 85%, 95%) sin llamadas a funciones de ejecución.
+
+---
+
+## 24. Próximos Pasos (Pendiente de Autorización)
+
+* Revisión y visto bueno final de la planificación corregida de la Fase 8.
+* Una vez aprobado, autorización secuencial del Paso 8.1 (Tipado e interfaces sin modificación de motores previos).
