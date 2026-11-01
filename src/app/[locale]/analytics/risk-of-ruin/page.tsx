@@ -174,11 +174,19 @@ export default function RiskOfRuinPage() {
 
         <StatCard
           title={`${t.riskOfRuin.finiteRoR} (${tradesHorizon} T)`}
-          value={`${result.finiteHorizonRuinProbability}%`}
+          value={
+            result.exactFiniteRuinProbability !== undefined
+              ? `${result.exactFiniteRuinProbability}%`
+              : result.exactPercentageEquityRuinProbability !== undefined
+              ? `${result.exactPercentageEquityRuinProbability}%`
+              : `${result.finiteHorizonRuinProbability}%`
+          }
           subtitle={
             result.exactFiniteRuinProbability !== undefined
-              ? `MC (${result.riskUnits} stops) · Exacto DP: ${result.exactFiniteRuinProbability}%`
-              : `Simulación Monte Carlo (${result.riskUnits} stops)`
+              ? `Analítico Exacto DP (MC: ${result.finiteHorizonRuinProbability}%)`
+              : result.exactPercentageEquityRuinProbability !== undefined
+              ? `Analítico Exacto Binomial (MC: ${result.finiteHorizonRuinProbability}%)`
+              : `Estimación Monte Carlo (${result.riskUnits} stops)`
           }
           icon={<Calculator className="w-5 h-5 text-[#00F0FF]" />}
           trend={result.finiteHorizonRuinProbability < 1 ? 'up' : 'down'}

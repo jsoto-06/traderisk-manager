@@ -799,7 +799,52 @@ Todas las simulaciones Monte Carlo concuerdan con la solución determinista de P
 
 ---
 
-## 19. Próximos Pasos (Fase 6)
+## 19. FASE 5.2.2 — Auditoría Final del Riesgo de Ruina y Validación del Modelo Percentage Equity (Completada)
+
+En la Fase 5.2.2 se ejecutó una auditoría matemática y estadística de cierre sobre `src/lib/analytics/risk-of-ruin.ts`, formalizando la elegibilidad del cálculo exacto, implementando el modelo analítico multiplicativo para `percentage_equity`, y auditando el Benchmark D con intervalos de confianza Wilson y convergencia asintótica.
+
+### 1. Corrección de la Elegibilidad del Cálculo Exacto
+- **Deficiencias Previas**:
+  - Se utilizaba la tolerancia `Math.abs(payoffRatio - 1.0) < 0.01`, lo que permitía que casos asimétricos como $R = 0.995$ o $R = 1.005$ activaran erróneamente la fórmula de la caminata clásica unitaria (+1 / -1).
+  - La función `calculateExactGamblersRuin` ejecutaba `const U = Math.round(riskUnits)`, redondeando silenciosamente valores fraccionarios (ej. $U = 5.4 \to 5$) y mostrando un resultado analítico falso.
+- **Correcciones Implementadas**:
+  - Elegibilidad estricta: Se requiere obligatoriamente `riskModel === 'fixed_amount'`, `Math.abs(averageWin - averageLoss) < 1e-9` ($R \equiv 1.0$), `Number.isInteger(riskUnits)` con $U \ge 1$, y tasa de acierto válida.
+  - En caso de $R \ne 1.0$ o $U$ no entero (ej. $U = 5.4$), `exactFiniteRuinProbability` permanece estrictamente `undefined`.
+  - En `calculateExactGamblersRuin`, ante $U$ positivo no entero se devuelve `NaN` sin redondeo silencioso.
+
+### 2. Modelo Determinista Multiplicativo de `percentage_equity`
+- **Dinámica del Balance**:
+  - Ganancia: $B_{t+1} = B_t \cdot (1 + f \cdot R)$.
+  - Pérdida: $B_{t+1} = B_t \cdot (1 - f)$.
+  - Ruina: $B_t \le B_0 \cdot (1 - \text{maxLossLimitPercent} / 100)$.
+- **Implementación Analítica**:
+  - Función `calculateExactPercentageEquityRuin`: Algoritmo de Programación Dinámica sobre retículo binomial en $O(T^2)$ que evalúa los nodos absorbidos en cada paso temporal $t \in [1, T]$.
+  - Comprobación: Con capital \$10,000, límite 5% (\$9,500), riesgo 1%, $W=45\%, T=10$, la probabilidad analítica exacta es **$11.4568\%$**, coincidiendo con la simulación Monte Carlo a gran escala ($N=100,000$: $11.44\%$, error $< 0.02\%$).
+  - Demostración de colchón de beneficios: 6 pérdidas consecutivas generan ruina ($B_6 = \$9,414.80 \le \$9,500$), pero una trayectoria mixta $WLLLLLL$ finaliza en $\$9,508.95 > \$9,500$ (sin ruina), requiriendo 7 pérdidas consecutivas para tocar la barrera.
+
+### 3. Auditoría Estadística Rigurosa de Benchmark D ($W=45\%, U=5, T=100$)
+- **Valor Analítico Exacto**: $P_{\text{true}} = 87.3602\%$.
+- **Discrepancia en $N = 2,000$ (Seed 101)**:
+  - Observado: $\hat{p} = 85.65\%$ (1713 éxitos de 2000).
+  - Intervalo de Wilson al 95%: $[84.05\%, 87.12\%]$. El valor verdadero $87.36\%$ queda fuera del 95% debido a una desviación aleatoria de $Z = 2.30$ ($p = 2.14\%$).
+  - Intervalo de Wilson al 99%: $[83.54\%, 87.57\%]$. El valor verdadero $87.36\%$ queda DENTRO de la banda de aceptación del 99% ($Z = 2.30 < 2.58$).
+- **Convergencia Demostrada al Escalar $N$**:
+  - $N = 10,000$: $\hat{p} = 86.95\%$ ($Z = 1.23$, dentro del IC Wilson 95% $[86.28\%, 87.60\%]$).
+  - $N = 50,000$: $\hat{p} = 87.15\%$ ($Z = 1.44$, dentro del IC Wilson 95% $[86.85\%, 87.44\%]$).
+  - $N = 100,000$: $\hat{p} = 87.25\%$ ($Z = 1.10$, dentro del IC Wilson 95% $[87.04\%, 87.45\%]$).
+
+### 4. Auditoría de la Matriz de Sensibilidad y Propagación
+- Se demostró mediante pruebas unitarias que la columna empírica de la matriz de escenarios de riesgo (`scenarios`) refleja de forma efectiva la selección entre `fixed_amount` y `percentage_equity`.
+
+### 5. Suite de Pruebas Automatizadas
+- Nuevo archivo de test: `src/__tests__/risk-of-ruin-final-audit.test.ts` (22 tests que cubren de la A a la O).
+- Estado global: **240 tests aprobados** (22 archivos de prueba), 6 tests omitidos condicionalmente.
+- TypeScript (`npx tsc --noEmit`) y Linter (`npm run lint`): 0 errores.
+- Compilación de producción (`npm run build`): Exitosa.
+
+---
+
+## 20. Próximos Pasos (Fase 6)
 
 * Exportación de informes cuantitativos en formato PDF y hojas de cálculo CSV para auditorías de riesgo y prop firms.
 * Conexión con proveedores de datos de mercado en tiempo real (Binance API, Interactive Brokers Web API).

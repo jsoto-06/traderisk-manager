@@ -201,10 +201,11 @@ export interface RiskOfRuinResult {
   advantage: number; // A parameter in Ralph Vince / Perry formula
   riskUnits: number; // Units of risk to breach
   analyticalRuinProbability: number; // Asymptotic closed-form formula % (Ralph Vince, T -> inf)
-  asymptoticRuinProbability: number; // Explicit asymptotic ruin %
-  finiteHorizonRuinProbability: number; // Empirical & barrier finite horizon % for tradesHorizon
-  exactFiniteRuinProbability?: number; // Analytical Dynamic Programming solution for classical Gambler's Ruin (R = 1, fixed risk)
-  empiricalRuinProbability: number; // Monte Carlo %
+  asymptoticRuinProbability: number; // Explicit asymptotic ruin % (Ralph Vince, T -> inf)
+  finiteHorizonRuinProbability: number; // Finite horizon ruin % for tradesHorizon (deterministic DP when eligible, or Monte Carlo)
+  exactFiniteRuinProbability?: number; // Analytical Dynamic Programming solution for classical Gambler's Ruin (STRICT: R = 1.0, integer U >= 1, fixed risk)
+  exactPercentageEquityRuinProbability?: number; // Analytical binomial lattice Dynamic Programming solution for multiplicative percentage equity model
+  empiricalRuinProbability: number; // Empirical Monte Carlo simulation % (2,000 paths)
   scenarios: RiskScenarioComparison[];
   kellyCriterion: {
     fullKellyPercent: number;

@@ -75,11 +75,44 @@ export function calculateRiskOfRuin(config: RiskOfRuinConfig): RiskOfRuinResult 
   const finiteHorizonRuinProbability = empiricalSimulation.ruinProbability;
   const empiricalRuinProbability = finiteHorizonRuinProbability;
 
-  // Exact finite-horizon ruin probability via Dynamic Programming for classical Gambler's Ruin (R = 1, fixed risk)
+  // 1. Exact finite-horizon ruin probability via Dynamic Programming for classical Gambler's Ruin
+  // STRICT ELIGIBILITY: Fixed risk, exact symmetric payoff R = 1.0, strict positive integer risk units U, valid win rate
   let exactFiniteRuinProbability: number | undefined;
-  if (Math.abs(payoffRatio - 1.0) < 0.01 && riskModel === 'fixed_amount') {
+  const isIntegerRiskUnits =
+    Math.abs(riskUnits - Math.round(riskUnits)) < 1e-9 && riskUnits >= 1;
+  const isExactFixedEligible =
+    riskModel === 'fixed_amount' &&
+    Math.abs(averageWin - averageLoss) < 1e-9 &&
+    isIntegerRiskUnits &&
+    winRate >= 0 &&
+    winRate <= 100 &&
+    tradesHorizon >= 1;
+
+  if (isExactFixedEligible) {
     exactFiniteRuinProbability = Number(
-      calculateExactGamblersRuin(riskUnits, winRate, tradesHorizon).toFixed(2),
+      calculateExactGamblersRuin(Math.round(riskUnits), winRate, tradesHorizon).toFixed(2),
+    );
+  }
+
+  // 2. Exact finite-horizon ruin probability via binomial lattice Dynamic Programming for Percentage Equity
+  let exactPercentageEquityRuinProbability: number | undefined;
+  if (
+    riskModel === 'percentage_equity' &&
+    tradesHorizon >= 1 &&
+    winRate >= 0 &&
+    winRate <= 100 &&
+    riskPerTradePercent > 0 &&
+    maxLossLimitPercent > 0
+  ) {
+    exactPercentageEquityRuinProbability = Number(
+      calculateExactPercentageEquityRuin(
+        initialCapital,
+        winRate,
+        payoffRatio,
+        riskPerTradePercent,
+        maxLossLimitPercent,
+        tradesHorizon,
+      ).toFixed(2),
     );
   }
 
@@ -192,8 +225,12 @@ export function calculateRiskOfRuin(config: RiskOfRuinConfig): RiskOfRuinResult 
   });
 
   const hypothesesAndLimits = [
+    'Definición de Ruina: Modela la probabilidad de alcanzar la barrera de pérdida máxima tolerada (maxLossLimitPercent), no necesariamente la pérdida del 100% del capital inicial salvo que dicho límite sea del 100%.',
     'Independencia e idéntica distribución (I.I.D.): Las fórmulas asumen ausencia de autocorrelación serial entre operaciones consecutivas.',
-    'Horizonte Asintótico vs. Finito: La fórmula cerrada de Ralph Vince / Belmont modela el límite asintótico cuando T -> infinito. En un horizonte finito T, la probabilidad empírica de ruina depende de T y de las unidades de parada U (puede ser 0% si T < U, intermedia, o 100% si el sistema carece de aciertos o el riesgo por operación agota el capital).',
+    'Horizonte Asintótico vs. Finito: La fórmula cerrada de Ralph Vince / Belmont modela el límite asintótico cuando T -> infinito. En un horizonte finito T, la probabilidad analítica de ruina depende de T y de las unidades de parada U (puede ser 0% si T < U, intermedia, o 100% si el sistema carece de aciertos o el riesgo por operación agota el capital).',
+    'Elegibilidad del Cálculo Exacto: La solución determinista de Gambler\'s Ruin DP requiere estrictamente riesgo fijo, payoff simétrico R = 1.0 (ganancia unitaria igual a pérdida unitaria) y unidades de riesgo U enteras positivas. En caso de payoffs asimétricos o riesgo no entero, se presenta la estimación Monte Carlo.',
+    'Modelo de Riesgo Porcentual: En percentage_equity el capital evoluciona multiplicativamente B_{t+1} = B_t * (1 + f * R) en victoria y B_t * (1 - f) en derrota. Al contraerse el riesgo en dólares con las pérdidas, la probabilidad de ruina para límites parciales es inferior a la de riesgo fijo.',
+    'Gestión de Costes: Las comisiones y spreads se consideran netos integrados en la ganancia media y pérdida media por operación; los modelos asumen estacionariedad en estos parámetros netos.',
     'Criterio de Kelly No es una Garantía: Maximiza asintóticamente la tasa de crecimiento logarítmico del capital, pero no garantiza rentabilidad en plazos finitos y expone la cuenta a drawdowns profundos (50%-80%). Se incluye un tope de riesgo máximo configurable para prevenir sobreexposición.',
     'Sensibilidad de Parámetros: Pequeñas variaciones muestrales en el Win Rate o Payoff Ratio modifican de forma desproporcionada la fracción óptima de Kelly.',
     'Estacionariedad de Régimen: Los modelos asumen constancia en las condiciones de mercado; no contemplan cisnes negros fuera de la muestra histórica.',
@@ -216,6 +253,7 @@ export function calculateRiskOfRuin(config: RiskOfRuinConfig): RiskOfRuinResult 
     asymptoticRuinProbability,
     finiteHorizonRuinProbability,
     exactFiniteRuinProbability,
+    exactPercentageEquityRuinProbability,
     empiricalRuinProbability,
     scenarios,
     kellyCriterion: {
@@ -315,11 +353,33 @@ export function calculateExactGamblersRuin(
   winRate: number,
   tradesHorizon: number,
 ): number {
+  if (
+    typeof riskUnits !== 'number' ||
+    !Number.isFinite(riskUnits) ||
+    isNaN(riskUnits) ||
+    typeof winRate !== 'number' ||
+    !Number.isFinite(winRate) ||
+    isNaN(winRate) ||
+    typeof tradesHorizon !== 'number' ||
+    !Number.isFinite(tradesHorizon) ||
+    isNaN(tradesHorizon)
+  ) {
+    return NaN;
+  }
+
+  if (riskUnits <= 0) {
+    return 100.0;
+  }
+
+  // Strict check: riskUnits must be an exact integer >= 1. Do NOT silently round!
+  if (Math.abs(riskUnits - Math.round(riskUnits)) > 1e-9) {
+    return NaN;
+  }
+
   const U = Math.round(riskUnits);
   const W = winRate > 1 ? winRate / 100 : winRate;
   const T = Math.round(tradesHorizon);
 
-  if (U <= 0) return 100.0;
   if (T <= 0) return 0.0;
   if (W <= 0) return T >= U ? 100.0 : 0.0;
   if (W >= 1) return 0.0;
@@ -345,4 +405,104 @@ export function calculateExactGamblersRuin(
   }
 
   return Number((Math.min(1.0, cumulativeRuin) * 100).toFixed(4));
+}
+
+/**
+ * Computes the exact, analytical finite-horizon ruin probability for the multiplicative
+ * Percentage Equity risk model via deterministic binomial lattice Dynamic Programming.
+ *
+ * Model hypotheses:
+ * - Starting capital: initialCapital (B_0 > 0)
+ * - Risk fraction: f = riskPercent / 100
+ * - Payoff ratio: R = payoffRatio
+ * - Win balance: B_{t+1} = B_t * (1 + f * R)
+ * - Loss balance: B_{t+1} = B_t * (1 - f)
+ * - Ruin threshold: B_t <= initialCapital * (1 - maxLossPercent / 100)
+ * - Absorbing barrier: Path terminates at first breach.
+ *
+ * @returns Cumulative ruin probability as a percentage [0.00, 100.00]
+ */
+export function calculateExactPercentageEquityRuin(
+  initialCapital: number,
+  winRate: number,
+  payoffRatio: number,
+  riskPercent: number,
+  maxLossPercent: number,
+  tradesHorizon: number,
+): number {
+  if (initialCapital <= 0) return 100.0;
+  if (maxLossPercent <= 0) return 100.0;
+  if (tradesHorizon <= 0) return 0.0;
+  if (riskPercent <= 0) return 0.0;
+
+  const W = winRate > 1 ? winRate / 100 : winRate;
+  const f = riskPercent / 100;
+  const threshold = initialCapital * (1 - maxLossPercent / 100);
+
+  if (W <= 0) {
+    let b = initialCapital;
+    for (let t = 1; t <= tradesHorizon; t++) {
+      b *= (1 - f);
+      if (b <= threshold) return 100.0;
+    }
+    return 0.0;
+  }
+  if (W >= 1) return 0.0;
+
+  const q = 1 - W;
+  const u = 1 + f * payoffRatio;
+  const d = 1 - f;
+  if (d <= 0) return 100.0;
+
+  let dp = new Float64Array(1);
+  dp[0] = 1.0;
+  let cumulativeRuin = 0.0;
+
+  for (let t = 1; t <= tradesHorizon; t++) {
+    const nextDp = new Float64Array(t + 1);
+
+    for (let w = 0; w <= t; w++) {
+      const fromWin = w > 0 ? dp[w - 1] * W : 0;
+      const fromLoss = w < t ? dp[w] * q : 0;
+      const prob = fromWin + fromLoss;
+
+      if (prob > 0) {
+        const balance = initialCapital * Math.pow(u, w) * Math.pow(d, t - w);
+        if (balance <= threshold || balance <= 0) {
+          cumulativeRuin += prob;
+          nextDp[w] = 0; // Absorbed!
+        } else {
+          nextDp[w] = prob; // Active
+        }
+      }
+    }
+    dp = nextDp;
+  }
+
+  return Number((Math.min(1.0, cumulativeRuin) * 100).toFixed(4));
+}
+
+/**
+ * Computes Wilson Score confidence interval for a binomial proportion.
+ * Recommended over Wald interval for asymmetric proportions (near 0 or 1) and small/moderate N.
+ */
+export function calculateWilsonScoreInterval(
+  successes: number,
+  trials: number,
+  confidenceLevel: 0.95 | 0.99 | 0.997 = 0.95,
+): { lower: number; upper: number; center: number } {
+  if (trials <= 0) return { lower: 0, upper: 0, center: 0 };
+  const p = successes / trials;
+  const z =
+    confidenceLevel === 0.997 ? 3.0 : confidenceLevel === 0.99 ? 2.57583 : 1.95996;
+  const z2 = z * z;
+  const denominator = 1 + z2 / trials;
+  const center = (p + z2 / (2 * trials)) / denominator;
+  const spread =
+    (z * Math.sqrt((p * (1 - p)) / trials + z2 / (4 * trials * trials))) / denominator;
+  return {
+    lower: Number((Math.max(0, center - spread) * 100).toFixed(4)),
+    upper: Number((Math.min(1, center + spread) * 100).toFixed(4)),
+    center: Number((center * 100).toFixed(4)),
+  };
 }
