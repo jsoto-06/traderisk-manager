@@ -958,273 +958,265 @@ En la Fase 7 se desarrolló el motor institucional de generación y exportación
 
 ---
 
-## 23. FASE 8 — Planificación Técnica: Integración de Feeds de Mercado en Tiempo Real (Revisión Final de Arquitectura)
+## 23. FASE 8 — Planificación Técnica: Integración de Feeds de Mercado en Tiempo Real (Especificación Definitiva)
 
 > [!IMPORTANT]
-> **ESTADO DE LA FASE 8**: Planificación técnica y especificación matemática formal de cierre. **No se permite la implementación de código ni el inicio del Paso 8.1 hasta la aprobación explícita de este documento.**
-> La plataforma es estrictamente una herramienta analítica, de control cuantitativo y disciplina de riesgo para **trading manual**. **Bajo ninguna circunstancia enviará órdenes, ejecutará operaciones automáticas ni gestionará permisos de trading o retirada de fondos.**
+> **ESTADO DE LA FASE 8**: Cierre de la especificación técnica y matemática previa a cualquier codificación. **No se permite modificar código funcional ni iniciar el Paso 8.1 hasta la aprobación formal de este documento.**
+> La plataforma es estrictamente una herramienta analítica, de supervisión y gestión de disciplina de riesgo para **trading manual**. **Bajo ninguna circunstancia enviará órdenes, ejecutará operaciones automáticas ni gestionará credenciales de trading o retirada.**
 
 ---
 
-### 1. Conciliación Contable de Comisiones y Demarcación de Balances
+### 1. Especificación Rigurosa y Desacoplada de Dynamic Open Risk
 
-En la Fase 6.1 se auditó rigurosamente el libro mayor (`src/hooks/useStorage.ts`, `trades/page.tsx`, `statistics/index.ts`). A continuación se formaliza el tratamiento contable de las comisiones para garantizar que **nunca se descuenten dos veces** ni se produzcan derivas entre Balance y Equity:
-
-#### A. Ciclo de Vida Contable del Trade y Estado de Balances
-1. **Trade Abierto (`status === 'open'`)**:
-   - `account.balance`: **No se modifica**. El saldo contable realizado permanece inalterado.
-   - `trade.commissions`: Registra la comisión conocida de apertura (o \$0 si el broker factura a la liquidación).
-   - **Floating Net PnL**: Debe contemplar tanto el resultado bruto como los costes totales devengados y proyectados:
-     $$PnL_{\text{net, floating}} = PnL_{\text{gross}} + \text{AccruedFunding} - \text{OpenCommissions} - \text{EstimatedCloseCommissions}$$
-   - **Equity Dinámico**:
-     $$\text{Equity} = \text{Balance} + \sum_{i \in \text{OpenPositions}} PnL_{\text{net, floating}, i}$$
-   - *Garantía Anti-Doble Deducción*: Dado que `account.balance` aún no ha restado `OpenCommissions`, restarla dentro de `PnL_net, floating` refleja la equidad real líquida exacta.
-2. **Cierre Definitivo del Trade (`status === 'closed'`)**:
-   - El trade se persiste con su resultado bruto final (`trade.result = GrossResult`) y las comisiones totales reales consolidadas (`trade.commissions = OpenCommissions + ActualCloseCommissions`).
-   - El hook `useStorage` aplica el impacto contable neto de una sola vez:
-     $$\text{NetResult} = \text{trade.result} - \text{trade.commissions}$$
-     $$\text{Balance}_{\text{new}} = \text{Balance}_{\text{old}} + \text{NetResult}$$
-   - El trade abandona el conjunto de posiciones abiertas. En consecuencia, su `PnL_net, floating` deja de sumarse a la equidad.
-   - **Reconciliación Inmediata**: En el instante posterior al cierre, $\text{Equity} \equiv \text{Balance}$ (asumiendo cero posiciones abiertas remanentes), sin desfase de céntimos.
-3. **Modelo Alternativo B (Broker con Débito Inmediato de Apertura en Efectivo)**:
-   - Si la cuenta se configura en modo de conciliación bancaria con débito de apertura en efectivo (`deductOpenCommissionsFromBalance: true`), `account.balance` reduce `OpenCommissions` al registrar el trade. En dicho caso, la fórmula de `PnL_net, floating` omite restar `OpenCommissions` para no duplicar el gasto. En el modelo por defecto de TradeRisk Manager (Modelo A), las comisiones se aplican al balance al cierre del ciclo.
-
-#### B. Matriz de Casos de Prueba de Conciliación Contable Obligatorios
-1. *Apertura de Operación*: Balance \$10,000, trade abierto con comisión de apertura \$5, PnL bruto \$0 $\to$ Balance = \$10,000.00, Floating Net PnL = -\$5.00 (más comisiones estimadas de salida), Equity = \$9,995.00 - CloseFees.
-2. *Comisión Pendiente de Contabilización*: Trade abierto sin comisión de apertura inicial (\$0) con coste de salida estimado \$3 $\to$ Floating Net PnL = PnL bruto - \$3.
-3. *Comisión Estimada de Cierre Dinámica*: A medida que el precio fluctúa, si la comisión es porcentual (ad valorem), la comisión de cierre estimada se recalcula sobre el valor nocional actual, actualizando la equidad dinámicamente.
-4. *Cierre Definitivo de Operación*: Trade cerrado con PnL bruto +\$200 y comisiones totales \$10 $\to$ Balance sube de \$10,000 a \$10,190.00. La equidad final se concilia exactamente en \$10,190.00.
-5. *Edición y Reversión Contable*: Modificar el precio de salida o la comisión de una operación cerrada revierte el impacto neto anterior y aplica el nuevo diferencial de forma atómica (`delta = newNet - oldNet`).
-
----
-
-### 2. Especificación Rigurosa de Dynamic Open Risk
-
-Se descompone formalmente la exposición de salida en tres variables independientes para impedir que los costes de transacción distorsionen la definición de riesgo de precio:
+La distancia entre el precio actual y el Stop Loss no equivale a la pérdida de capital respecto al precio de entrada. Se segregan formalmente cuatro métricas independientes:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                 DESCOMPOSICIÓN DE LA EXPOSICIÓN DE SALIDA                   │
+│                 DESCOMPOSICIÓN FORMAL DE LA EXPOSICIÓN AL STOP LOSS         │
 ├───────────────────────────────┬─────────────────────────────────────────────┤
-│ Componente                    │ Definición y Comportamiento Matemático      │
+│ Variable                      │ Definición y Comportamiento Matemático      │
 ├───────────────────────────────┼─────────────────────────────────────────────┤
-│ 1. PriceRiskToSL              │ Riesgo puro de variación de precio hasta SL.│
-│                               │ NUNCA puede ser negativo.                   │
-│                               │ Si SL está en breakeven/profit: PriceRisk=0 │
+│ 1. MarkToStopDistance         │ Distancia monetaria desde el precio actual  │
+│                               │ hasta el Stop Loss. Si el mercado cruzó el  │
+│                               │ SL, la distancia es estrictamente $0.00.    │
 ├───────────────────────────────┼─────────────────────────────────────────────┤
-│ 2. EstimatedExitCosts         │ Comisiones estimadas de cierre + fricción   │
-│                               │ de spread/slippage proyectada. Siempre >= 0 │
+│ 2. CapitalRiskAtSL            │ Pérdida monetaria de capital respecto a la  │
+│                               │ entrada si salta el SL. NUNCA es negativo.  │
+│                               │ Si SL protege capital (profit): Risk=$0.00  │
 ├───────────────────────────────┼─────────────────────────────────────────────┤
-│ 3. EstimatedTotalExitExposure │ Exposición total estimada en el Stop Loss:  │
-│                               │ TotalExposure = PriceRiskToSL + ExitCosts   │
+│ 3. EstimatedExitCosts         │ Comisiones estimadas de cierre + fricción   │
+│                               │ de spread/slippage en el nivel de Stop Loss │
+├───────────────────────────────┼─────────────────────────────────────────────┤
+│ 4. TotalExitExposure          │ Exposición total = Riesgo + Costes de Cierre│
 └───────────────────────────────┴─────────────────────────────────────────────┘
 ```
 
 #### Fórmulas por Tipo de Instrumento:
-1. **Spot / Acciones / CFDs / USD-M Perpetuos**:
-   $$\Delta p_{\text{SL}} = (\text{CurrentPrice} - \text{StopLoss}) \cdot (\text{direction} == \text{'long'} ? 1 : -1)$$
-   $$\text{PriceRiskToSL} = \max\left(0, \Delta p_{\text{SL}} \cdot \text{Size} \cdot \text{FXRate}\right)$$
-   $$\text{EstimatedExitCosts} = \text{StopLoss} \cdot \text{Size} \cdot \frac{\text{closeFeePercent}}{100} \cdot \text{FXRate} + \text{FixedCloseFee} \cdot \text{FXRate}$$
-   $$\text{EstimatedTotalExitExposure} = \text{PriceRiskToSL} + \text{EstimatedExitCosts}$$
-2. **Forex**:
-   $$\Delta pips_{\text{SL}} = \frac{\text{CurrentPrice} - \text{StopLoss}}{\text{PipSize}} \cdot (\text{direction} == \text{'long'} ? 1 : -1)$$
-   $$\text{PriceRiskToSL} = \max\left(0, \Delta pips_{\text{SL}} \cdot \text{PipValue}_{\text{quote}} \cdot \text{FXRate}_{\text{quote} \to \text{account}}\right)$$
-3. **Futuros**:
-   $$\Delta points_{\text{SL}} = (\text{CurrentPrice} - \text{StopLoss}) \cdot (\text{direction} == \text{'long'} ? 1 : -1)$$
-   $$\text{PriceRiskToSL} = \max\left(0, \Delta points_{\text{SL}} \cdot \text{Multiplier} \cdot \text{Contracts} \cdot \text{FXRate}\right)$$
+
+1. **Instrumentos Lineales (Spot, Acciones, CFDs, Cripto USD-M Perpetuos)**:
+   - **`MarkToStopDistance`** (desde la cotización actual):
+     - Long: $\text{MarkToStopDistance} = \max(0, (\text{CurrentBid} - \text{StopLoss}) \cdot \text{Size} \cdot \text{FXRate})$
+     - Short: $\text{MarkToStopDistance} = \max(0, (\text{StopLoss} - \text{CurrentAsk}) \cdot \text{Size} \cdot \text{FXRate})$
+   - **`CapitalRiskAtSL`** (pérdida de capital respecto a la entrada):
+     - Long: $\text{CapitalRiskAtSL} = \max(0, (\text{EntryPrice} - \text{StopLoss}) \cdot \text{Size} \cdot \text{FXRate})$
+     - Short: $\text{CapitalRiskAtSL} = \max(0, (\text{StopLoss} - \text{EntryPrice}) \cdot \text{Size} \cdot \text{FXRate})$
+     *(Si en un Long $\text{StopLoss} \ge \text{EntryPrice}$, o en un Short $\text{StopLoss} \le \text{EntryPrice}$, el capital está protegido y $\text{CapitalRiskAtSL} \equiv 0.00$).*
+   - **`EstimatedExitCosts`**:
+     $$\text{EstimatedExitCosts} = \text{StopLoss} \cdot \text{Size} \cdot \frac{\text{closeFeePercent}}{100} \cdot \text{FXRate} + \text{FixedCloseFee} \cdot \text{FXRate}$$
+   - **`EstimatedTotalExitExposure`**:
+     $$\text{EstimatedTotalExitExposure} = \text{CapitalRiskAtSL} + \text{EstimatedExitCosts}$$
+
+2. **Forex (Lotes Estándar, Mini, Micro con Pips y Conversión Cruzada)**:
+   - Long:
+     $$\text{CapitalRiskAtSL} = \max\left(0, \frac{\text{EntryPrice} - \text{StopLoss}}{\text{PipSize}} \cdot \text{PipValue}_{\text{quote}} \cdot \text{FXRate}_{\text{quote} \to \text{account}}\right)$$
+   - Short:
+     $$\text{CapitalRiskAtSL} = \max\left(0, \frac{\text{StopLoss} - \text{EntryPrice}}{\text{PipSize}} \cdot \text{PipValue}_{\text{quote}} \cdot \text{FXRate}_{\text{quote} \to \text{account}}\right)$$
+
+3. **Futuros Regulados (Tick Size, Tick Value y Multiplicador)**:
+   - Long:
+     $$\text{CapitalRiskAtSL} = \max\left(0, (\text{EntryPrice} - \text{StopLoss}) \cdot \text{ContractMultiplier} \cdot \text{Contracts} \cdot \text{FXRate}\right)$$
+   - Short:
+     $$\text{CapitalRiskAtSL} = \max\left(0, (\text{StopLoss} - \text{EntryPrice}) \cdot \text{ContractMultiplier} \cdot \text{Contracts} \cdot \text{FXRate}\right)$$
+
 4. **Cripto Perpetuos Inversos (Coin-M)**:
-   $$\text{PriceRiskToSL} = \max\left(0, \left|\frac{1}{\text{CurrentPrice}} - \frac{1}{\text{StopLoss}}\right| \cdot \text{Contracts} \cdot \text{ContractMultiplier} \cdot \text{CoinPrice} \cdot \text{FXRate}\right)$$
-   *(Si el Stop Loss se encuentra en zona de beneficios respecto a la entrada, el riesgo de pérdida de capital inicial es estrictamente \$0.00).*
+   - En contratos inversos no se utiliza valor absoluto; se respeta la asimetría hiperbólica Long/Short:
+   - Long (pérdida cuando $\text{StopLoss} < \text{EntryPrice}$):
+     $$\text{Loss}_{\text{base, at SL}} = \max\left(0, \left(\frac{1}{\text{StopLoss}} - \frac{1}{\text{EntryPrice}}\right) \cdot \text{Contracts} \cdot \text{ContractMultiplier}\right)$$
+     $$\text{CapitalRiskAtSL} = \text{Loss}_{\text{base, at SL}} \cdot \text{StopLoss} \cdot \text{FXRate}_{\text{base} \to \text{account}}$$
+   - Short (pérdida cuando $\text{StopLoss} > \text{EntryPrice}$):
+     $$\text{Loss}_{\text{base, at SL}} = \max\left(0, \left(\frac{1}{\text{EntryPrice}} - \frac{1}{\text{StopLoss}}\right) \cdot \text{Contracts} \cdot \text{ContractMultiplier}\right)$$
+     $$\text{CapitalRiskAtSL} = \text{Loss}_{\text{base, at SL}} \cdot \text{StopLoss} \cdot \text{FXRate}_{\text{base} \to \text{account}}$$
 
 ---
 
-### 3. Modelado Realista de Margen y Manejo Tipado
+### 2. Formalización Contable y Demarcación de Balances
 
-No se utiliza la simplificación universal `Nominal / Leverage`, ya que distorsiona la realidad financiera de futuros y CFDs regulados:
+Se define con rigor contable la arquitectura de libro mayor de la aplicación:
 
-1. **Futuros Regulados (CME, Eurex, ICE)**: El margen no es proporcional al apalancamiento, sino un importe monetario fijo por contrato determinado por las cámaras de compensación (SPAN Margin / Margen Inicial y de Mantenimiento fijo, ej. \$12,000 / contrato en ES, \$1,200 en MES). Si no se proporciona el requerimiento de margen del contrato, se reporta como no disponible.
-2. **CFDs bajo Regulación ESMA / FCA**: Márgenes mínimos por clase de activo: Forex Majors 3.33% (30:1), Forex Minors e Índices Principales 5% (20:1), Commodities 10% (10:1), Acciones 20% (5:1), Cripto 50% (2:1).
-3. **Cripto Perpetuos (Binance USD-M / Coin-M)**:
-   - *Isolated Margin*: El margen asignado es independiente por posición.
-   - *Cross Margin*: El margen disponible es el capital total de la cuenta.
-   - *Margen Escalonado (Tiered MMR)*: A mayor nocional acumulado, la tasa de margen de mantenimiento aumenta automáticamente.
-4. **Tratamiento Tipado Seguro (Sin `Infinity`)**:
-   - `usedMargin: number | null` (si falta información, estrictamente `null`).
-   - `freeMargin: number | null`.
-   - `marginLevelPercent: number | null` (cuando `usedMargin === 0` o `usedMargin === null`, se devuelve estrictamente `null`, jamás el valor no serializable `Infinity`).
-   - `marginStatus: 'verified' | 'estimated' | 'not_available'`.
-
----
-
-### 4. Arquitectura de Conexión Segura para Proveedores Autenticados
-
-> [!CAUTION]
-> **Vulnerabilidad de Seguridad Resuelta**: Conectar un WebSocket directamente desde el cliente hacia `wss://ws.finnhub.io?token=SECRET` expone la clave privada en el bundle JavaScript y en la pestaña Network del navegador. Un Route Handler convencional en Next.js (`GET /api/...`) no puede actuar como proxy WebSocket persistente en entornos serverless (Vercel, AWS Lambda) debido a límites de tiempo de ejecución (10s a 60s) y falta de soporte para conexiones TCP persistentes.
-
-#### Arquitectura de Tres Vías:
-1. **Vía A: Binance Public WebSocket (Directo en Navegador - 100% Seguro)**:
-   - Los endpoints `wss://stream.binance.com:9443/ws` y `wss://fstream.binance.com/ws` son **públicos y anónimos**.
-   - No requieren API Key ni token. Se consumen directamente desde el cliente web con latencia mínima (<100ms) sin riesgo de exposición de credenciales.
-2. **Vía B: Proveedores Autenticados (Finnhub, Twelve Data) mediante Server-Side REST Proxy con Caché**:
-   - El token reside en el servidor (`process.env.FINNHUB_API_KEY`).
-   - El frontend consulta `/api/market-data/quote?symbol=...` mediante REST polling adaptativo (5s en pestaña activa).
-   - El servidor implementa una caché en memoria / KV con TTL de 3 segundos para deduplicar peticiones y respetar el límite de 60 req/min del plan gratuito.
-3. **Vía C: WebSocket de Servidor Dedicado (Pendiente de Infraestructura Stateful)**:
-   - Si en el futuro se requiere streaming en tiempo real sub-segundo para acciones o forex autenticado, se requerirá un microservicio Node.js stateful independiente que mantenga el WebSocket con Finnhub y retransmita cotizaciones al cliente vía **Server-Sent Events (SSE)**.
-   - Mientras la aplicación se ejecute en infraestructura serverless estándar de Next.js, **Finnhub WebSocket se mantiene en estado PENDIENTE**, operando exclusivamente vía REST Proxy seguro. **Jamás se implementará una solución que exponga tokens en el cliente.**
+1. **`ledgerBalance`**: Saldo contable interno de la cuenta acumulado exclusivamente a partir de operaciones formalmente cerradas, depósitos y retiros. **No constituye garantía de coincidencia con el saldo bancario del broker**, ya que este último puede incorporar spreads ocultos, slippage no modelado o swaps de fin de semana no registrados.
+2. **`brokerWalletBalance`**: Saldo efectivo reportado por la API del broker/exchange. **Solo estará presente si existe una conexión institucional de lectura directa**. En modo manual o feeds públicos de mercado, su valor es estrictamente `null`.
+3. **Segregación de Financiación (Funding)**:
+   - `settledFunding`: Financiación que ya ha sido formalmente liquidada e impactada en el saldo en efectivo de la cuenta.
+   - `accruedFunding`: Financiación devengada acumulada durante la vida de la posición abierta que aún no ha sido liquidada en el balance.
+4. **`floatingNetPnL` (Resultado Flotante Neto)**:
+   $$PnL_{\text{net, floating}} = PnL_{\text{gross}} + \text{accruedFunding} - \text{OpenCommissions} - \text{EstimatedCloseCommissions}$$
+5. **`equity` (Equidad Líquida)**:
+   $$\text{Equity} = \text{ledgerBalance} + \text{settledFunding} + \sum_{i \in \text{OpenPositions}} PnL_{\text{net, floating}, i}$$
+6. **Invariante de Cero Doble Deducción y Reconciliación de Cierre**:
+   - En `status === 'open'`, `ledgerBalance` permanece inalterado. La comisión de apertura reduce la equidad flotante, pero no el balance contable.
+   - Al cerrar la operación (`status === 'closed'`), el libro mayor aplica:
+     $$\Delta \text{Balance} = \text{ActualGrossResult} + \text{settledFunding} - (\text{OpenCommissions} + \text{ActualCloseCommissions})$$
+   - El trade sale del conjunto de abiertas. Si no restan posiciones abiertas, se verifica la conciliación exacta: $\text{Equity}_{\text{post-close}} \equiv \text{ledgerBalance}_{\text{post-close}}$.
 
 ---
 
-### 5. Fusión Monotónica de Peak Equity y Resistencia a Desincronización
+### 3. Especificación Rigurosa de Criptomonedas Inversas (Coin-M)
 
-Para proteger el cálculo de Drawdown frente a condiciones de carrera o sincronizaciones distribuidas fuera de orden:
+Para instrumentos Coin-M (margen y liquidación en la criptomoneda base):
 
-#### A. Regla de Fusión Monotónica
-El pico de equidad histórico de una cuenta es una función no decreciente dentro de un ciclo de evaluación de drawdown:
-$$\text{PeakEquity}_{\text{merged}} = \max\left(\text{PeakEquity}_{\text{local}}, \text{PeakEquity}_{\text{server}}\right)$$
-- Si un cliente offline reconecta y recibe un registro de Supabase cuyo timestamp es más reciente pero cuyo `peakEquity` es menor (por haberse calculado en un estado previo o parcial), la regla $\max$ prevalece de manera atómica, impidiendo que el piso de trailing drawdown descienda indebidamente.
+- **Variables y Unidades**:
+  - $N_{\text{contracts}}$: Número de contratos (entero).
+  - $M_{\text{contract}}$: Multiplicador nominal en USD (\$100 USD en BTCUSD; \$10 USD en ETHUSD).
+  - Valor nominal en USD: $\text{Nominal}_{\text{USD}} = N_{\text{contracts}} \cdot M_{\text{contract}}$.
+  - Valor nominal en moneda base: $\text{Nominal}_{\text{base}} = \frac{\text{Nominal}_{\text{USD}}}{\text{MarkPrice}}$ (en BTC/ETH).
+  - $PnL_{\text{gross, base}}$: Expresado en moneda base (BTC).
+  - $PnL_{\text{gross, quote}}$: Contravalor en USD al Mark Price actual: $PnL_{\text{gross, base}} \cdot \text{MarkPrice}$.
+- **Distinción de Streams Públicos de Binance**:
+  - **Binance Spot**: `wss://stream.binance.com:9443/ws`
+  - **Binance USD-M Futures**: `wss://fstream.binance.com/ws`
+  - **Binance Coin-M Futures**: `wss://dstream.binance.com/ws` (Topic: `<symbol>@markPrice` o `<symbol>@bookTicker`).
 
-#### B. Segregación de Picos según Modalidad de Drawdown
-Cada cuenta mantiene sus variables de pico según su modelo:
-- `peakBalance`: Máximo saldo cerrado alcanzado (para Trailing Balance Drawdown).
-- `peakEquityIntraday`: Máxima equidad alcanzada en tiempo real (para Trailing Equity Intra-Trade de Apex/Topstep). **Solo se actualiza cuando el 100% de las posiciones abiertas poseen cotizaciones `LIVE`**.
-- `peakEquityEOD`: Equidad registrada al cierre oficial diario (para Trailing EOD de FTMO/MFF).
+#### Ejemplo Numérico Coin-M Paso a Paso con PnL Neto y Costes:
+- **Parámetros**:
+  - Contrato: Binance BTCUSD Coin-M Perpetual Inverso ($M_{\text{contract}} = \$100 \text{ USD}$).
+  - Posición: Long 100 contratos ($\text{Nominal}_{\text{USD}} = 100 \cdot 100 = \$10,000 \text{ USD}$).
+  - Entry Price: \$80,000.00 USD/BTC.
+  - Current Mark Price: \$88,000.00 USD/BTC.
+  - Tasa de comisión de apertura: 0.05% Taker.
+    $$\text{Nominal}_{\text{BTC, open}} = \frac{10,000}{80,000} = 0.125 \text{ BTC}$$
+    $$\text{Fee}_{\text{open, BTC}} = 0.125 \cdot 0.0005 = 0.0000625 \text{ BTC} \quad (\$5.00 \text{ USD})$$
+  - Tasa de comisión estimada de cierre: 0.05% Taker.
+    $$\text{Nominal}_{\text{BTC, close}} = \frac{10,000}{88,000} = 0.113636 \text{ BTC}$$
+    $$\text{Fee}_{\text{close, BTC}} = 0.113636 \cdot 0.0005 = 0.00005682 \text{ BTC} \quad (\$5.00 \text{ USD})$$
+  - Funding devengado: 1 evento ocurrido a las 08:00 UTC con tasa $FR = +0.01\%$. Mark Price al momento del funding = \$85,000.
+    $$\text{Nominal}_{\text{BTC, funding}} = \frac{10,000}{85,000} = 0.117647 \text{ BTC}$$
+    $$\text{AccruedFunding}_{\text{BTC}} = -(0.117647 \cdot 0.0001) = -0.00001176 \text{ BTC} \quad (-\$1.00 \text{ USD})$$
+- **Resultados Consolidados**:
+  1. *Floating Gross PnL en BTC*:
+     $$PnL_{\text{gross, BTC}} = \left(\frac{1}{80,000} - \frac{1}{88,000}\right) \cdot 10,000 = (0.0000125 - 0.0000113636) \cdot 10,000 = +0.0113636 \text{ BTC}$$
+  2. *Contravalor Bruto en USD*:
+     $$PnL_{\text{gross, USD}} = 0.0113636 \cdot 88,000.00 = +\$1,000.00 \text{ USD}$$
+  3. *Floating Net PnL en BTC*:
+     $$PnL_{\text{net, BTC}} = 0.0113636 - 0.00001176 (\text{funding}) - 0.0000625 (\text{fee open}) - 0.00005682 (\text{fee close}) = +0.0112325 \text{ BTC}$$
+  4. *Floating Net PnL en USD*:
+     $$PnL_{\text{net, USD}} = 0.0112325 \cdot 88,000.00 = +\$988.46 \text{ USD}$$
+  5. *Conversión a Divisa de Cuenta (EUR, tipo EUR/USD = 1.0800)*:
+     $$PnL_{\text{net, EUR}} = \frac{988.46}{1.0800} = +€915.24 \text{ EUR}$$
 
 ---
 
-### 6. Perfiles Parametrizados de Prop Firms
+### 4. Protección y Fusión Monotónica de Peak Equity
 
-Se abandona cualquier codificación rígida basada únicamente en el nombre de la empresa. Las reglas se definen mediante perfiles auditables y versionados:
+Para evitar heredar picos históricos entre retos o sufrir regresiones por sincronización distribuida:
+
+1. **Fusión Monotónica Atómica en Servidor (PostgreSQL)**:
+   - La actualización del pico no depende únicamente del cliente. En PostgreSQL se aplica una sentencia transaccional atómica:
+     ```sql
+     UPDATE public.accounts
+     SET peak_equity = GREATEST(COALESCE(peak_equity, 0), EXCLUDED.peak_equity),
+         updated_at = timezone('utc'::text, now())
+     WHERE id = target_account_id;
+     ```
+2. **Aislamiento por Ciclo de Evaluación (`evaluationCycleId`)**:
+   - Cada cuenta de Prop Firm incorpora un identificador único de evaluación (`evaluationCycleId`, ej. `"eval_topstep_50k_01"`).
+   - Al reiniciar un reto tras descalificación o pase de fase, se emite un nuevo `evaluationCycleId`.
+   - **Garantía**: `peakEquity` queda estrictamente vinculado al ciclo activo, impidiendo heredar picos alcanzados en evaluaciones anteriores.
+3. **Segregación de Métricas de Pico**:
+   - `peakBalance`: Máximo balance realizado cerrado.
+   - `peakEquityIntraday`: Máxima equidad alcanzada en tiempo real. **Solo se actualiza cuando el 100% de las posiciones abiertas poseen cotizaciones `LIVE`**.
+   - `peakEquityEOD`: Equidad fijada al cierre de la jornada diaria oficial.
+
+---
+
+### 5. Medición Temporal Rigurosa y Detección de Anomalías
+
+Se sustituye cualquier mención a `Date.now()` como reloj monotónico. Se define la arquitectura de sincronización de tiempo:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                       ARQUITECTURA DE MEDICIÓN TEMPORAL                     │
+├─────────────────────┬───────────────────────────────────────────────────────┤
+│ Reloj Monotónico    │ performance.now() en el navegador.                    │
+│                     │ Mide intervalos continuos inmunes a ajustes NTP       │
+│                     │ o modificaciones del reloj del sistema operativo.     │
+├─────────────────────┼───────────────────────────────────────────────────────┤
+│ Wall-Clock Local    │ Date.now() UTC para fechar eventos absolutos.         │
+├─────────────────────┼───────────────────────────────────────────────────────┤
+│ Offset Horario      │ Δclock = Date.now() - serverTime (medido en handshake)│
+├─────────────────────┼───────────────────────────────────────────────────────┤
+│ Antigüedad Efectiva │ ageMs = (performance.now() - clientReceiptPerfTime)   │
+│                     │ + networkTransitEstimate                              │
+└─────────────────────┴───────────────────────────────────────────────────────┘
+```
+
+#### Filtros de Rechazo de Ticks:
+1. **Ticks Fuera de Orden**: Si $\text{providerTimestamp} < \text{lastProcessedProviderTimestamp}$, la cotización se descarta inmediatamente para impedir regresiones de precio por latencia asimétrica.
+2. **Timestamps Futuros Anómalos**: Si $\text{providerTimestamp} > \text{Date.now()} - \Delta_{\text{clock}} + 2,000 \text{ ms}$, la cotización se rechaza y se emite una advertencia de deriva horaria.
+3. **Invariante de Frescura**: Aunque un tick acabe de ingresar al socket, si su `providerTimestamp` ajustado supera el umbral de mercado ($\ge 5 \text{s}$ en Cripto; $\ge 15 \text{s}$ en Forex/Acciones), se clasifica obligatoriamente como `STALE`.
+
+---
+
+### 6. Perfiles Parametrizados y Versionados de Prop Firms
+
+Se formaliza el contrato completo que modela exhaustivamente las condiciones de cada firma y reto:
 
 ```typescript
 export interface PropFirmRuleProfile {
   firmId: string;
-  firmName: string;               // Ej. "Topstep", "Apex Trader Funding", "FTMO"
-  programName: string;            // Ej. "50k Combine", "100k Full Evaluation"
+  firmName: string;                     // "Topstep", "Apex Trader Funding", "FTMO"
+  programName: string;                  // "50k Combine", "100k Evaluation"
+  accountSize: number;                  // Capital nominal (ej. 50000)
   drawdownType: 'static' | 'trailing_balance' | 'trailing_equity_intraday' | 'trailing_equity_eod';
   drawdownBase: 'balance' | 'equity';
-  maxTotalDrawdownAmount: number; // Ej. 2000
-  maxDailyLossAmount?: number;    // Ej. 1000
-  trailingStopThreshold?: number; // Umbral donde el trailing se detiene (ej. InitialCapital + $100)
-  dailyResetHour: number;         // Ej. 17 (5:00 PM)
-  dailyResetTimezone: string;     // Ej. "America/New_York"
-  termsVersion: string;           // Ej. "2026.1"
-  reviewedAt: string;             // ISO Date de última verificación humana
-  isVerified: boolean;            // true si verificado con T&C oficiales; false si estimado
-  isConfigurable: boolean;        // Permite al usuario sobreescribir cada campo manualmente
+  maxTotalDrawdownAmount: number;       // Pérdida máxima total permitida (ej. 2000)
+  trailingStopThreshold?: number;       // Umbral donde el trailing se detiene (ej. 50100)
+  
+  // Reglas de Pérdida Diaria
+  maxDailyLossAmount?: number;          // Pérdida diaria máxima (ej. 1000)
+  dailyLossBase: 'balance' | 'equity';
+  dailyLossIncludesFloating: boolean;   // true si computa PnL flotante intra-día
+  dailyLossIncludesCommissions: boolean;// true si descuenta comisiones en el cupo
+  dailyLossIncludesFunding: boolean;    // true si computa cobro/pago de funding
+  
+  // Calendario y Reinicio
+  dailyResetHour: number;               // Ej. 17 (5:00 PM)
+  dailyResetTimezone: string;           // "America/New_York"
+  marketCalendar: 'cme' | 'forex_24_5' | 'crypto_24_7';
+  
+  // Comportamiento de Infracción
+  breachBehavior: 'hard_breach' | 'soft_breach';
+  
+  // Metadatos de Auditoría
+  termsVersion: string;                 // Ej. "2026.1"
+  reviewedAt: string;                   // ISO Date de última comprobación
+  isVerified: boolean;                  // true si contrastado con términos vigentes
+  isConfigurable: boolean;              // Permite editar cualquier parámetro manualmente
 }
 ```
 
 ---
 
-### 7. Calidad Temporal y Detección de Desviación Horaria
+### 7. Matriz de Pruebas de Aceptación Previa a la Implementación
 
-No se clasifica una cotización como `LIVE` simplemente porque acaba de llegar al socket del navegador. Se evalúa su frescura temporal real:
-
-1. **Estimación de Deriva Horaria (Clock Skew)**:
-   - Durante el handshake inicial (o ping REST periódico), el cliente mide el offset:
-     $$\Delta_{\text{clock}} = \text{Date.now()} - \text{serverTime}$$
-2. **Antigüedad Monotónica de la Cotización**:
-   - Timestamp del proveedor ajustado:
-     $$\text{adjustedProviderTime} = \text{providerTimestamp} + \Delta_{\text{clock}}$$
-   - Antigüedad efectiva:
-     $$\text{ageMs} = \text{Date.now()} - \text{adjustedProviderTime}$$
-3. **Filtro de Detección de Anomalías**:
-   - *Timestamp Futuro*: Si $\text{adjustedProviderTime} > \text{Date.now()} + 2,000 \text{ ms}$, se emite advertencia de deriva horaria anormal.
-   - *Tick Fuera de Orden*: Si $\text{providerTimestamp} < \text{lastProcessedTimestamp}$, la cotización se descarta para evitar que ticks rezagados en la red sobrescriban precios más recientes.
-4. **Clasificación Estricta**:
-   - Una cotización que llegue al socket con $\text{ageMs} \ge 5,000 \text{ ms}$ (en Cripto) o $\ge 15,000 \text{ ms}$ (en Forex/Acciones) se clasifica automáticamente como `STALE`, aunque el socket acabe de recibirla.
+| Identificador | Prueba Obligatoria | Condición de Aprobación Esperada |
+| :--- | :--- | :--- |
+| **TEST-8.1** | Long con SL en ganancias (profit) | `CapitalRiskAtSL === 0.00`. Cero valor negativo. `EstimatedExitCosts` mostrado por separado. |
+| **TEST-8.2** | Short con SL en ganancias (profit) | `CapitalRiskAtSL === 0.00`. Exposición de precio nula. |
+| **TEST-8.3** | SL situado en zona de pérdida | `CapitalRiskAtSL > 0.00` evaluado con fórmula direccional exacta. |
+| **TEST-8.4** | Mercado cruzó el Stop Loss | `MarkToStopDistance === 0.00`. No arroja distancias negativas. |
+| **TEST-8.5** | Conversión FX a divisa de cuenta | PnL en divisa cotizada convertido con tipo Bid/Ask sin invertir el multiplicador. |
+| **TEST-8.6** | PnL y Funding Coin-M Inverso | Valuación asimétrica en BTC con `PnL_net` exacto deduciendo apertura, funding y cierre proyectado. |
+| **TEST-8.7** | Conciliación de comisiones | `Equity` pre-cierre $\equiv$ `Balance` post-cierre al liquidar la última posición. Cero doble deducción. |
+| **TEST-8.8** | Fusión Monotónica de Peak Equity | Actualización remota con timestamp posterior pero `peakEquity` inferior no reduce el pico local. |
+| **TEST-8.9** | Aislamiento por `evaluationCycleId`| Al cambiar de ciclo o reiniciar cuenta, el pico histórico del ciclo previo no se propaga al nuevo. |
+| **TEST-8.10**| Rechazo de ticks anómalos | Cotización con timestamp fuera de orden o futuro > 2s descartada sin alterar la última cotización. |
 
 ---
 
-### 8. Fórmulas Financieras por Instrumento con Ejemplos Numéricos Verificables
+### 8. Decisiones Técnicas Pendientes y Confirmación de Estado
 
-A continuación se detallan las fórmulas con sus unidades monetarias exactas y un ejemplo numérico paso a paso para cada clase de activo:
-
-#### Ejemplo 1: Cripto Perpetuo Lineal USD-M (Binance BTCUSDT)
-- **Datos de Entrada**:
-  - Posición: Long 0.5 BTC.
-  - Entry Price: \$80,000.00 USDT.
-  - Current Mark Price: \$82,000.00 USDT.
-  - Current Bid / Ask: \$81,990.00 / \$82,010.00 USDT.
-  - Comisión de apertura ya registrada: \$16.00 USDT (\$80,000 * 0.5 * 0.04%).
-  - Tasa de comisión de cierre estimada: 0.04%.
-  - Funding devengado: 1 evento de liquidación ocurrido a las 08:00 UTC con tasa $FR = +0.01\%$ (+0.0001).
-- **Cálculos**:
-  1. *Floating Gross PnL*:
-     $$PnL_{\text{gross}} = (82,000.00 - 80,000.00) \cdot 0.5 = +\$1,000.00 \text{ USDT}$$
-  2. *Funding Acumulado Devengado*: Long paga tasa positiva:
-     $$\text{Nominal} = 82,000.00 \cdot 0.5 = \$41,000.00 \text{ USDT}$$
-     $$\text{AccruedFunding} = -(41,000.00 \cdot 0.0001) = -\$4.10 \text{ USDT}$$
-  3. *Comisión Estimada de Cierre*:
-     $$\text{Fee}_{\text{close}} = 82,000.00 \cdot 0.5 \cdot 0.0004 = \$16.40 \text{ USDT}$$
-  4. *Floating Net PnL*:
-     $$PnL_{\text{net}} = 1,000.00 + (-4.10) - 16.00 - 16.40 = +\$963.50 \text{ USDT}$$
-
-#### Ejemplo 2: Cripto Perpetuo Inverso Coin-M (Binance BTCUSD)
-- **Datos de Entrada**:
-  - Posición: Long 100 contratos (\$100 USD de valor nominal por contrato = \$10,000 USD de valor nominal total).
-  - Entry Price: \$80,000.00 USD/BTC.
-  - Current Mark Price: \$88,000.00 USD/BTC.
-  - Comisión de apertura: 0.00005 BTC.
-  - Funding devengado: 1 evento ocurrido a las 08:00 UTC con $FR = +0.01\%$.
-- **Cálculos**:
-  1. *Floating Gross PnL en BTC*:
-     $$PnL_{\text{gross, BTC}} = \left(\frac{1}{80,000} - \frac{1}{88,000}\right) \cdot (100 \cdot 100) = (0.0000125 - 0.0000113636) \cdot 10,000 = +0.011364 \text{ BTC}$$
-  2. *Valor del Gross PnL en USD al Mark Price actual*:
-     $$PnL_{\text{gross, USD}} = 0.011364 \cdot 88,000.00 = +\$1,000.03 \text{ USD}$$
-  3. *Funding en BTC*: Long paga tasa positiva sobre nominal en BTC:
-     $$\text{Nominal}_{\text{BTC}} = \frac{10,000}{88,000} = 0.113636 \text{ BTC}$$
-     $$\text{AccruedFunding}_{\text{BTC}} = -(0.113636 \cdot 0.0001) = -0.00001136 \text{ BTC} \quad (-\$1.00 \text{ USD})$$
-
-#### Ejemplo 3: Forex con Conversión de Divisa de Liquidación
-- **Datos de Entrada**:
-  - Cuenta en **EUR**. Posición: Short 1.0 Lote Estándar EUR/USD (100,000 unidades).
-  - Entry Price: 1.08500.
-  - Current Ask (precio ejecutable de salida de un Short): 1.08100.
-  - Pip Size: 0.0001. Pip Value en divisa cotizada (USD): \$10.00 USD.
-  - Tipo de cambio actual EUR/USD: 1.08100 $\to$ Tasa de conversión USD a EUR: $1 / 1.08100 \approx 0.925069$ EUR/USD.
-  - Comisiones registradas: \$5.00 USD (\$4.63 EUR).
-- **Cálculos**:
-  1. *Pips a favor*: $(1.08500 - 1.08100) / 0.0001 = +40.0 \text{ pips}$.
-  2. *Floating Gross PnL en USD*: $40.0 \cdot 10.00 = +\$400.00 \text{ USD}$.
-  3. *Floating Gross PnL en EUR (divisa de cuenta)*:
-     $$PnL_{\text{gross, EUR}} = 400.00 \cdot \left(\frac{1}{1.08100}\right) = +€370.03 \text{ EUR}$$
-  4. *Floating Net PnL en EUR*: $370.03 - 4.63 = +€365.40 \text{ EUR}$.
-
-#### Ejemplo 4: Futuros Regulados (CME E-mini S&P 500 - ES)
-- **Datos de Entrada**:
-  - Posición: Long 2 contratos ES.
-  - Entry Price: 5,800.00.
-  - Current Bid (precio ejecutable de salida de un Long): 5,825.50.
-  - Multiplicador por punto: \$50.00 USD por contrato (Tick Size: 0.25 puntos; Tick Value: \$12.50 USD).
-  - Margen Inicial Requerido por la Cámara (SPAN): \$12,320.00 USD por contrato.
-- **Cálculos**:
-  1. *Puntos recorridos*: $5,825.50 - 5,800.00 = +25.50 \text{ puntos}$.
-  2. *Floating Gross PnL*:
-     $$PnL_{\text{gross}} = 25.50 \cdot 50.00 \cdot 2 = +\$2,550.00 \text{ USD}$$
-  3. *Used Margin*:
-     $$\text{UsedMargin} = 12,320.00 \cdot 2 = \$24,640.00 \text{ USD}$$
-     *(Nótese que no es Nominal / Apalancamiento ficticio; es el margen SPAN real).*
+1. **Decisión de Caché en Servidor**:
+   - Para el proxy REST seguro de Finnhub/Twelve Data, se implementará una caché en memoria en Next.js con TTL de 3 segundos para garantizar que múltiples aperturas o consultas concurrentes en el cliente nunca sobrepasen las 60 req/min del plan gratuito.
+2. **Finnhub WebSocket**:
+   - Se mantiene formalmente en estado **PENDIENTE** por no disponerse de un microservicio Node.js stateful dedicado para tunelar WebSockets con SSE. Se operará de forma segura vía REST Proxy.
+3. **Estado del Repositorio**:
+   - **Cero código funcional modificado**.
+   - Suite de Vitest intacta: 265 pruebas aprobadas, 6 pruebas reales de Supabase omitidas condicionalmente.
+   - Sincronizado en `PROJECT_CONTEXT.md`.
 
 ---
 
-### 9. Batería de Pruebas de Aceptación Previa a Cualquier Despliegue
+## 24. Próximos Pasos (Esperando Autorización Formal)
 
-1. **Test Contable de Cero Doble Deducción de Comisiones**:
-   - Verificar que `Equity` antes del cierre coincide exactamente con el `Balance` inmediatamente posterior al cierre.
-2. **Test de No Negatividad de Dynamic Open Risk**:
-   - Probar casos donde `StopLoss > EntryPrice` en Longs, certificando que `PriceRiskToSL` es estrictamente `0.00` y no un valor negativo que reste a la exposición.
-3. **Test de Margen Seguro**:
-   - Verificar que ante cuentas sin apalancamiento o sin posiciones, `marginLevelPercent` es estrictamente `null` y no `Infinity` ni `NaN`.
-4. **Test de Fusión Monotónica de Peak Equity**:
-   - Simular sincronización remota con timestamp más nuevo pero `peakEquity` inferior, verificando que el valor local superior se preserva intacto.
-5. **Test de Desconexión de Red y Modo Offline**:
-   - Simular pérdida de conectividad durante posiciones abiertas, validando que el balance contable no se modifica y que la interfaz muestra de forma inequívoca el estado `OFFLINE` y la antigüedad de la cotización.
-
----
-
-## 24. Próximos Pasos (Pendiente de Aprobación Formal)
-
-* Revisión y visto bueno final de esta planificación corregida.
-* Tras la aprobación formal, autorización para la apertura e implementación secuencial del Paso 8.1.
+* Visto bueno final a esta especificación técnica de cierre.
+* Una vez concedida la aprobación, inicio formal y secuencial del **Paso 8.1** (Tipado y contratos en `src/lib/market-data/types.ts`).
