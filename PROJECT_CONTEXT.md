@@ -1371,119 +1371,230 @@ El **Paso 8.1** ha sido implementado y verificado en su totalidad de acuerdo con
 
 ---
 
-## 25. Plan Técnico Detallado — Paso 8.2: Motor de Valuación Cuantitativa en Tiempo Real
+## 25. Plan Técnico Cuantitativo — Paso 8.2: Motor de Valuación en Tiempo Real (Revisión Final)
 
-El Paso 8.1 ha quedado formalmente cerrado con éxito y verificado en vivo. Se presenta a continuación la especificación técnica completa y plan de arquitectura del **Paso 8.2**, sin modificar código funcional.
+El Paso 8.1 ha quedado formalmente cerrado con éxito y verificado en vivo. Conforme a la autorización exclusiva de diseño documental, se presenta a continuación la especificación cuantitativa final, modelos matemáticos rigurosos y criterios de aceptación del **Paso 8.2**, sin modificar código funcional.
 
-### 1. Auditoría de Tipos y Contratos Existentes
-1. **Contratos en `src/lib/types.ts`**:
-   - `Trade`: Define posiciones abiertas (`status: 'open'`) con `entryPrice`, `stopLoss`, `takeProfit`, `size`, `direction` ('long' | 'short'), `asset`, `commissions` (apertura).
-   - `Account`: Contiene `balance` (saldo contable cerrado), `equity` (equidad dinámica), `currency`, `dailyLossLimit`, `maxDrawdown`, `drawdownType`.
-   - `FloatingPositionValuation` y `AccountValuationSnapshot`: Borradores iniciales que se consolidarán y enriquecerán en el módulo de valuación.
-2. **Contratos en `src/lib/market-data/types.ts` (Fase 8.1)**:
-   - `MarketPriceQuote`: Provee `bid`, `ask`, `mid`, `spread`, `status` (`'live' | 'stale' | 'offline' | 'manual'`), `isSpike`, `lastReliableQuote`, `st` (universo) y `updateId`.
+---
+
+### 1. Auditoría de Tipos y Compatibilidad con Interfaces Existentes
+1. **Estado Contable y Operativo (`src/lib/types.ts`)**:
+   - `Trade`: Modela posiciones con `status: 'open'`, `entryPrice`, `stopLoss`, `takeProfit`, `size`, `direction` ('long' | 'short'), `asset`, `commissions` (apertura).
+   - `Account`: Contiene `balance` (saldo cerrado liquidado), `equity` (equidad dinámica), `currency`, `dailyLossLimit`, `maxDrawdown`, `drawdownType`.
+   - Compatibilidad: El motor de valuación consumirá estas estructuras de forma no destructiva sin modificar su esquema ni invalidar el almacenamiento local o sincronizado.
+2. **Infraestructura de Mercado (`src/lib/market-data/types.ts`)**:
+   - Suministra cotizaciones `MarketPriceQuote` (`bid`, `ask`, `mid`, `spread`, `updateId`, `exchangeEventTime`, `status`, `isSpike`, `lastReliableQuote`, `st`, `pairSymbol`).
+   - Se alimenta de los adaptadores de Binance Spot, USD-M y Coin-M con segregación estricta de universos.
+
+---
 
 ### 2. Arquitectura de Módulos y Dependencias
-Se creará un subsistema modular bajo `src/lib/valuation/` completamente desacoplado de la UI y del socket de transporte:
+Se estructurará el subsistema bajo `src/lib/valuation/` como una capa matemática pura y desacoplada de la interfaz de usuario:
 
 ```
 src/lib/valuation/
-├── types.ts                      # Interfaces de valuación, snapshots, riesgo dinámico y métricas de margen
+├── types.ts                      # Interfaces de valuación, snapshots, riesgo dinámico, Daily Loss y márgenes
 ├── calculators/
-│   ├── spot.ts                   # Valuador de Spot (Cripto y Acciones al contado)
-│   ├── usdm.ts                   # Valuador de Perpetuos Lineales USD-M
-│   ├── coinm.ts                  # Valuador de Futuros y Perpetuos Inversos Coin-M (BTC settlement)
-│   ├── forex.ts                  # Valuador de Forex con lotes, pip values y conversión FX
-│   ├── futures.ts                # Valuador de Futuros estándar (CME ES, NQ, CL) con multiplicador y ticks
-│   └── stocks.ts                 # Valuador de Acciones enteras/fraccionarias y CFDs
-├── engine.ts                     # MultiAssetValuationEngine: orquestador multi-cuenta y multi-posición
-└── index.ts                      # Exportaciones públicas del subsistema
+│   ├── spot.ts                   # Valuador Spot (Long cash y Short sujeto a préstamo de margen)
+│   ├── usdm.ts                   # Valuador Perpetuos Lineales USD-M
+│   ├── coinm.ts                  # Valuador Futuros y Perpetuos Inversos Coin-M (BTC settlement y conversión)
+│   ├── forex.ts                  # Valuador Forex con lotes, pip values y conversión FX
+│   ├── futures.ts                # Valuador Futuros estándar (CME ES, NQ, CL) con multiplicador y ticks
+│   └── stocks.ts                 # Valuador Acciones enteras/fraccionarias y CFDs
+├── engine.ts                     # MultiAssetValuationEngine: orquestador multi-cuenta, riesgo y conciliación
+└── index.ts                      # Exportaciones públicas del módulo
 
-src/__tests__/valuation-engine.test.ts # Suite de pruebas cuantitativas exhaustivas
+src/__tests__/valuation-engine.test.ts # Suite de pruebas cuantitativas de valuación y conciliación
 ```
 
+---
+
 ### 3. Fórmulas Matemáticas por Clase de Activo
-No se aplica una fórmula universal; cada instrumento posee su propia matemática de liquidación:
 
-1. **Spot (Cripto & Acciones Cash)**:
-   - Long (cierre a Bid): $\text{GrossPnL} = (\text{Bid} - \text{EntryPrice}) \times \text{Size}$
-   - Short (cierre a Ask): $\text{GrossPnL} = (\text{EntryPrice} - \text{Ask}) \times \text{Size}$
-   - $\text{EstimatedExitCosts} = \text{ClosingFeeRate} \times \text{ExitPrice} \times \text{Size}$
-   - $\text{NetFloatingPnL} = \text{GrossPnL} - \text{EstimatedExitCosts}$
-2. **Perpetuos USD-M (Derivados Lineales USDT/USDC)**:
-   - Long (cierre a Bid): $\text{GrossPnL} = (\text{Bid} - \text{EntryPrice}) \times \text{Size}$
-   - Short (cierre a Ask): $\text{GrossPnL} = (\text{EntryPrice} - \text{Ask}) \times \text{Size}$
-   - $\text{NetFloatingPnL} = \text{GrossPnL} - \text{AccruedFunding} - \text{EstimatedClosingCommission}$
-3. **Coin-M Inversos (Liquidación Asimétrica en Cripto Base, ej. BTC)**:
-   - Tamaño expresado en contratos de valor nominal fijo ($D = \$100$ o $\$10$ por contrato). Total nominal $= N \times D$.
-   - Long (cierre a Bid): $\text{GrossPnL}_{\text{Base}} = \left(\frac{1}{\text{EntryPrice}} - \frac{1}{\text{Bid}}\right) \times (N \times D)$
-   - Short (cierre a Ask): $\text{GrossPnL}_{\text{Base}} = \left(\frac{1}{\text{Ask}} - \frac{1}{\text{EntryPrice}}\right) \times (N \times D)$
-   - Conversión a divisa de cuenta (USD): $\text{GrossPnL}_{\text{USD}} = \text{GrossPnL}_{\text{Base}} \times \text{ExitPrice}$
-4. **Forex (Pares de Divisas)**:
-   - $\text{Pips}_{\text{Long}} = (\text{Bid} - \text{EntryPrice}) / \text{PipSize}$; $\text{Pips}_{\text{Short}} = (\text{EntryPrice} - \text{Ask}) / \text{PipSize}$
-   - $\text{GrossPnL}_{\text{Quote}} = \text{Pips} \times \text{PipValue}_{\text{Quote}} \times \text{Lots}$
-   - $\text{GrossPnL}_{\text{Account}} = \text{GrossPnL}_{\text{Quote}} \times \text{FXRate}_{\text{Quote}\to\text{Account}}$
-5. **Futuros Tradicionales (CME / Eurex)**:
-   - Multiplicador $M$ (ej. $\$50$ para ES, $\$20$ para NQ).
-   - Long: $\text{GrossPnL} = (\text{Bid} - \text{EntryPrice}) \times M \times \text{Contracts}$
-   - Short: $\text{GrossPnL} = (\text{EntryPrice} - \text{Ask}) \times M \times \text{Contracts}$
-   - $\text{EstimatedExitCosts} = \text{CommissionPerContract} \times \text{Contracts}$
-6. **Acciones / CFDs**:
-   - Long: $\text{GrossPnL} = (\text{Bid} - \text{EntryPrice}) \times \text{Shares}$
-   - Short: $\text{GrossPnL} = (\text{EntryPrice} - \text{Ask}) \times \text{Shares}$
+No se aplica una fórmula universal; cada instrumento se rige por su modelo financiero específico:
 
-### 4. Tratamiento de Posiciones Long y Short
-* **Regla de Ejecución**: Toda posición Long se valora utilizando el **precio Bid** de mercado (precio al que compraría la contrapartida en una venta de liquidación). Toda posición Short se valora utilizando el **precio Ask** (precio al que se recompraría para cubrir).
-* **Dynamic Open Risk (Riesgo Dinámico)**:
-  - $\text{CapitalRiskAtSL}_{\text{Long}} = \max(0, (\text{EntryPrice} - \text{StopLoss}) \times \text{Size} \times \text{Multiplier} \times \text{FXRate})$
-  - $\text{CapitalRiskAtSL}_{\text{Short}} = \max(0, (\text{StopLoss} - \text{EntryPrice}) \times \text{Size} \times \text{Multiplier} \times \text{FXRate})$
-  - Si el SL está en ganancias (protege capital), $\text{CapitalRiskAtSL} \equiv 0.00$. Cero valores negativos.
-  - $\text{MarkToStopDistance}$: Distancia monetaria desde la cotización actual (Bid para Long, Ask para Short) hasta el SL. Si el mercado cruzó el SL, $\text{MarkToStopDistance} \equiv 0.00$.
-  - $\text{EstimatedExitCosts}$: Suma de comisiones de salida y slippage proyectado.
-  - $\text{EstimatedTotalExitExposure} = \text{CapitalRiskAtSL} + \text{EstimatedExitCosts}$.
+#### A. Spot (Cripto & Acciones Cash)
+* **Long (cierre a Bid)**:
+  $$\text{GrossPnL} = (\text{Bid} - \text{EntryPrice}) \times \text{Size}$$
+* **Short Spot (Regla Estricta de Préstamo)**:
+  - En mercados de contado (*cash spot*), no es legalmente posible vender en corto sin un mecanismo de préstamo de valores (*margin borrowing*).
+  - **Invariante Cuantitativa**: Si la posición es `short` y la cuenta/instrumento es de contado puro (`marginMode === 'cash'` o sin apalancamiento/préstamo habilitado), la valuación se bloquea con el error `INOPERABLE_SPOT_SHORT_WITHOUT_BORROWING`.
+  - Si dispone de préstamo de margen habilitado:
+    $$\text{GrossPnL} = (\text{EntryPrice} - \text{Ask}) \times \text{Size}$$
+    $$\text{BorrowingCosts} = \text{DailyBorrowRate} \times \text{DaysHeld} \times \text{NotionalBorrowed}$$
+* **Costes de Salida y PnL Neto**:
+  $$\text{EstimatedExitCosts} = \text{ClosingFeeRate} \times \text{ExitPrice} \times \text{Size} + \text{BorrowingCosts}$$
+  $$\text{NetFloatingPnL} = \text{GrossPnL} - \text{EstimatedExitCosts}$$
 
-### 5. Integración con Cuentas, Operaciones y Reglas de Prop Firm
-* **Fórmula Canónica de Equidad**:
-  $$\text{AccountEquity} = \text{LedgerBalance} + \sum_{i \in \text{OpenPositions}} \text{FloatingNetPnL}_i$$
-* **Demarcación de Comisiones**:
-  - La comisión de apertura (`trade.commissions`) ya está descontada en `LedgerBalance` si fue asentada al abrir. Por tanto, `FloatingNetPnL` solo resta la comisión estimada de **cierre**. Cero doble deducción.
-* **Integración con Motor de Prop Firm (`src/lib/prop-firm/index.ts`)**:
-  - Se suministra la `AccountEquity` calculada en tiempo real a `calculateDrawdown(accountWithRealtimeEquity, peakEquity)`.
-  - Se inyecta la pérdida flotante negativa `floatingLossToday = Math.min(0, sum(FloatingNetPnL))` en `calculateDailyLoss(account, closedTradesToday, floatingLossToday)`.
-  - Se respetan la zona horaria (`America/New_York`) y la hora de reinicio diario oficial (`dailyResetHour: 17` para CME).
+#### B. Perpetuos USD-M (Derivados Lineales USDT/USDC)
+* **Long (cierre a Bid)**: $\text{GrossPnL} = (\text{Bid} - \text{EntryPrice}) \times \text{Size}$
+* **Short (cierre a Ask)**: $\text{GrossPnL} = (\text{EntryPrice} - \text{Ask}) \times \text{Size}$
+* **Costes y Funding**:
+  $$\text{NetFloatingPnL} = \text{GrossPnL} - \text{AccruedFunding} - \text{EstimatedClosingCommission}$$
 
-### 6. Política de Frescura, Errores y Cotizaciones Sospechosas (`isSpike`)
-* **`LIVE`**: 100% operativo; permite actualizar `peakEquityIntraday`.
-* **`STALE`** ($> 5\text{s}$): La valoración se computa pero se emite con advertencia visual `isStale: true`; se **congela la actualización de picos de equidad**.
-* **`OFFLINE`** ($> 30\text{s}$): La valoración se marca como desactualizada (`isOutdated: true`); el snapshot expone el timestamp del último tick fiable.
+#### C. Coin-M Inversos (Liquidación Asimétrica en Cripto Base, ej. BTC)
+* Parámetros: $N$ contratos de valor nominal fijo en USD ($D = \$100$ para BTCUSD, $D = \$10$ para ETHUSD). Total nominal en USD $= N \times D$.
+* **Curva Asimétrica No Lineal en Moneda Base (BTC)**:
+  - **Long (cierre a Bid)**:
+    $$\text{GrossPnL}_{\text{Base}} = \left(\frac{1}{\text{EntryPrice}} - \frac{1}{\text{Bid}}\right) \times (N \times D)$$
+  - **Short (cierre a Ask)**:
+    $$\text{GrossPnL}_{\text{Base}} = \left(\frac{1}{\text{Ask}} - \frac{1}{\text{EntryPrice}}\right) \times (N \times D)$$
+* **Deducción de Costes en Moneda Base**:
+  $$\text{NetPnL}_{\text{Base}} = \text{GrossPnL}_{\text{Base}} - \text{AccruedFunding}_{\text{Base}} - \text{EstimatedClosingCommission}_{\text{Base}}$$
+* **Conversión a Divisa de la Cuenta (USD / EUR)**:
+  - Si la cuenta es en USD:
+    $$\text{GrossPnL}_{\text{USD}} = \text{GrossPnL}_{\text{Base}} \times \text{ExitPrice}$$
+    *(Demostración matemática: Long $\to (\text{Bid} - \text{Entry})/\text{Entry} \times (N \times D)$; Short $\to (\text{Entry} - \text{Ask})/\text{Entry} \times (N \times D) \times (\text{Ask}/\text{Entry})$)*.
+  - Si la cuenta es en EUR:
+    $$\text{GrossPnL}_{\text{EUR}} = \text{GrossPnL}_{\text{USD}} \times \frac{1}{\text{Ask}_{\text{EUR/USD}}}$$
+  - El motor expone siempre tanto el PnL nativo en la criptomoneda de liquidación (`pnlBaseCurrency`) como el valor convertido a la divisa de la cuenta (`pnlAccountCurrency`).
+
+#### D. Forex (Pares de Divisas)
+* Long: $\text{Pips} = (\text{Bid} - \text{Entry}) / \text{PipSize}$; Short: $\text{Pips} = (\text{Entry} - \text{Ask}) / \text{PipSize}$.
+* $\text{GrossPnL}_{\text{Quote}} = \text{Pips} \times \text{PipValue}_{\text{Quote}} \times \text{Lots}$.
+* Conversión FX estricta: tasa Bid si vende divisa cotizada para comprar divisa de cuenta, tasa Ask si compra divisa cotizada.
+
+#### E. Futuros Tradicionales (CME ES, NQ, CL)
+* Multiplicador $M$ (ej. $\$50$ para ES, $\$20$ para NQ).
+* Long: $\text{GrossPnL} = (\text{Bid} - \text{Entry}) \times M \times \text{Contracts}$.
+* Short: $\text{GrossPnL} = (\text{Entry} - \text{Ask}) \times M \times \text{Contracts}$.
+* $\text{EstimatedExitCosts} = \text{CommissionPerContract} \times \text{Contracts}$.
+
+#### F. Acciones y CFDs
+* Long: $\text{GrossPnL} = (\text{Bid} - \text{Entry}) \times \text{Shares}$; Short: $\text{GrossPnL} = (\text{Entry} - \text{Ask}) \times \text{Shares}$.
+
+---
+
+### 4. Dynamic Open Risk: Riesgo Inicial vs Riesgo Remanente
+
+Se formaliza la separación conceptual y cuantitativa entre el riesgo contraído al entrar al mercado y el riesgo de equidad remanente desde la cotización actual:
+
+1. **Riesgo Inicial de Capital (`CapitalRiskAtSL`)**:
+   - Mide la pérdida potencial de capital respecto al precio de entrada si el mercado retrocede al Stop Loss:
+     - Long: $\text{CapitalRiskAtSL} = \max\left(0, (\text{EntryPrice} - \text{StopLoss}) \times \text{Size} \times \text{Multiplier} \times \text{FXRate}\right)$
+     - Short: $\text{CapitalRiskAtSL} = \max\left(0, (\text{StopLoss} - \text{EntryPrice}) \times \text{Size} \times \text{Multiplier} \times \text{FXRate}\right)$
+   - **Propiedad Fundamental**: Si el SL ha sido ajustado a zona de beneficios ($\text{SL} > \text{Entry}$ para Long o $\text{SL} < \text{Entry}$ para Short), el capital inicial de entrada está 100% protegido:
+     $$\text{CapitalRiskAtSL} \equiv 0.00$$
+   - Nunca arroja valores negativos.
+2. **Riesgo Remanente de Equidad (`MarkToStopDistance` / `RemainingEquityRisk`)**:
+   - Mide la caída monetaria desde el precio actual de mercado (Bid para Long, Ask para Short) hasta el SL (devolución de beneficio flotante acumulado):
+     - Long: $\text{MarkToStopDistance} = \max\left(0, (\text{Bid} - \text{StopLoss}) \times \text{Size} \times \text{Multiplier} \times \text{FXRate}\right)$
+     - Short: $\text{MarkToStopDistance} = \max\left(0, (\text{StopLoss} - \text{Ask}) \times \text{Size} \times \text{Multiplier} \times \text{FXRate}\right)$
+   - Si el mercado ya cruzó el SL, $\text{MarkToStopDistance} \equiv 0.00$.
+3. **Costes Proyectados de Salida (`EstimatedExitCosts`)**:
+   $$\text{EstimatedExitCosts} = \text{ClosingCommissionsAtSL} + \text{SlippageAtSL} + \text{ProjectedFunding}$$
+4. **Exposición Total de Capital (`EstimatedTotalCapitalRisk`)**:
+   $$\text{EstimatedTotalCapitalRisk} = \text{CapitalRiskAtSL} + \text{EstimatedExitCosts}$$
+5. **Exposición Total de Equidad Abierta (`EstimatedTotalOpenRisk`)**:
+   $$\text{EstimatedTotalOpenRisk} = \text{MarkToStopDistance} + \text{EstimatedExitCosts}$$
+
+---
+
+### 5. Integración con Prop Firm y Daily Loss Intradía Riguroso
+
+Para impedir penalizar la jornada actual por pérdidas acumuladas en días previos o duplicar pérdidas ya cerradas, el cálculo de **Pérdida Diaria** se define mediante la variación intradía exacta:
+
+1. **Línea Base al Inicio del Día (`StartOfDay`)**:
+   - Registrada en la hora de reinicio oficial (`dailyResetHour`, ej. 17:00 EST para CME):
+     - $\text{StartOfDayBalance}$: Saldo cerrado al inicio del día.
+     - $\text{StartOfDayEquity}$: Equidad flotante al inicio del día.
+     - $\text{StartOfDayOpenFloating}$: Suma del PnL flotante de las posiciones que ya estaban abiertas en ese instante.
+2. **Descomposición del Rendimiento Intradía**:
+   - **PnL Realizado Hoy (`ClosedPnLToday`)**: Suma del resultado neto cerrado de operaciones liquidadas exclusivamente en la sesión actual:
+     $$\Delta \text{ClosedPnL}_{\text{today}} = \sum_{t \in \text{TradesClosedToday}} (\text{trade.result} - \text{trade.commissions})$$
+   - **Variación de Posiciones Abiertas (`DeltaOpenFloatingToday`)**:
+     $$\Delta \text{OpenFloating}_{\text{today}} = \text{CurrentOpenFloating} - \text{StartOfDayOpenFloating}$$
+     *Ejemplo de Aislamiento*: Si una posición Long acarreaba un flotante de $-\$500$ al inicio de la jornada y actualmente marca $-\$600$, el impacto atribuible a la jornada de hoy es exclusivamente $-\$100$, no $-\$600$.
+3. **Pérdida Diaria Total y Verificación de Infracción**:
+   $$\text{DailyNetPerformance} = \Delta \text{ClosedPnL}_{\text{today}} + \Delta \text{OpenFloating}_{\text{today}}$$
+   $$\text{DailyLossTotal} = \max(0, -\text{DailyNetPerformance})$$
+   $$\text{RemainingDailyLoss} = \max(0, \text{DailyLossLimitAmount} - \text{DailyLossTotal})$$
+   $$\text{isBreached} = \text{DailyLossTotal} \ge \text{DailyLossLimitAmount}$$
+4. **Prueba de Consistencia Global**:
+   $$\text{DailyNetPerformance} \equiv \text{CurrentEquity} - \text{StartOfDayEquity} - \text{NetDepositsToday}$$
+   Esta equivalencia matemática garantiza que ninguna pérdida se compute dos veces ni se hereden pérdidas de sesiones anteriores.
+
+---
+
+### 6. Conciliación Contable de Extremo a Extremo (Estimado vs Ejecutado)
+
+Se formaliza el ciclo contable antes y después del cierre de una posición abierta para garantizar la conservación exacta del saldo:
+
+1. **Estado Flotante Pre-Cierre**:
+   - Cotización de salida estimada: $\text{EstimatedExitPrice}$ (Bid en Long, Ask en Short).
+   - $\text{EstimatedClosingCommissions}$: Comisión proyectada de salida.
+   - $\text{EstimatedSlippage}$: Impacto de mercado proyectado.
+   - $\text{EstimatedNetFloatingPnL} = \text{Gross}(\text{EstimatedExitPrice}) - \text{Funding} - \text{EstimatedClosingCommissions} - \text{EstimatedSlippage}$.
+   - Equidad pre-cierre:
+     $$\text{Equity}_{\text{pre}} = \text{LedgerBalance} + \sum \text{EstimatedNetFloatingPnL}$$
+2. **Asentamiento en el Cierre Definitivo**:
+   - Al cerrar la posición, el usuario registra el precio de ejecución real ($\text{ActualExitPrice}$) y las comisiones definitivas cobradas por el broker ($\text{ActualCommissions}$).
+   - La posición pasa de `open` a `closed`: se retira del sumatorio flotante y se asienta en el balance:
+     $$\Delta \text{LedgerBalance} = \text{ActualRealizedNetPnL} = \text{Gross}(\text{ActualExitPrice}) - \text{ActualFunding} - \text{ActualCommissions}$$
+3. **Auditoría de Varianza de Ejecución**:
+   $$\text{ExecutionVariance} = \text{ActualRealizedNetPnL} - \text{EstimatedNetFloatingPnL}$$
+   Descompuesta exactamente en:
+   $$\text{ExecutionVariance} = \text{SlippageVariance} + \text{CommissionVariance} + \text{FundingVariance}$$
+   - **Caso de Ejecución Teórica Perfecta**: Si $\text{ActualExitPrice} == \text{EstimatedExitPrice}$ y comisiones exactas $\implies \text{ExecutionVariance} \equiv 0.00 \implies \text{Equity}_{\text{pre}} \equiv \text{Balance}_{\text{post}}$.
+   - **Cero Doble Deducción**: La comisión de apertura (`trade.commissions`) ya residía en `LedgerBalance`; la valuación flotante nunca deduce la apertura por segunda vez.
+
+---
+
+### 7. Política de Frescura y Cotizaciones Sospechosas (`isSpike`)
+
+* **`LIVE`**: Valuación activa; autoriza actualizar el `peakEquityIntraday`.
+* **`STALE`** ($> 5\,\text{s}$): La valoración se computa pero se emite con la bandera `isStale: true`; **se congela la actualización del High-Water Mark (Peak Equity)** para no fijar techos falsos con cotizaciones rezagadas.
+* **`OFFLINE`** ($> 30\,\text{s}$): La valoración se etiqueta como desactualizada (`isOutdated: true`); el snapshot expone el timestamp del último tick fiable.
 * **Cotizaciones Sospechosas (`isSpike: true`)**:
   - Para cálculos críticos de margen, liquidación y `peakEquity`, el motor utiliza estrictamente el `lastReliableQuote`.
-  - No se eleva el pico de equidad ante un tick etiquetado como `suspect_spike`.
-  - Si el detector de picos confirma la nueva meseta tras 3 ticks consecutivos coherentes (tolerancia del 2%), el motor adopta el nuevo precio como fiable.
+  - La cotización anómala se expone en la interfaz con advertencia de desvío porcentual, pero no se inyecta en los cálculos de drawdown.
+  - Al confirmarse 3 ticks sucesivos con updateId estrictamente creciente dentro de la tolerancia del 2%, el motor transiciona el nuevo precio a fiable.
 
-### 7. Estrategia de Precisión Decimal y Gestión de Margen
-* **Precisión Numérica**: Uso exclusivo de las funciones de `src/lib/risk-engine/precision.ts` (`roundDecimal`, `safeDivide`, `sumPnL`).
-* **Margen Utilizado y Disponible**:
-  - El margen utilizado solo se computa cuando existan datos completos de apalancamiento, margen inicial o MMR del broker.
-  - Si faltan parámetros de apalancamiento, `usedMargin` y `freeMargin` se marcan explícitamente como `undefined` (`isMarginEstimated: false`), evitando presentar estimaciones inventadas como ciertas.
-  - No se confunde en ningún caso el margen utilizado (capital retenido como garantía) con la pérdida potencial al Stop Loss (`CapitalRiskAtSL`).
+---
 
-### 8. Plan de Pruebas Unitarias y Escenarios Cuantitativos
-Se creará `src/__tests__/valuation-engine.test.ts` con cobertura de los escenarios de aceptación:
-1. Long Spot y USD-M valorados a Bid con deducción de costes de salida.
-2. Short Spot y USD-M valorados a Ask.
-3. Coin-M inverso: valuación asimétrica en BTC y conversión a USD.
-4. Long y Short con SL en profit ($\text{CapitalRiskAtSL} \equiv 0.00$).
-5. Mercado que cruzó el SL ($\text{MarkToStopDistance} \equiv 0.00$).
-6. Conciliación contable perfecta: al cerrar posición teóricamente, $\text{Equity}_{\text{pre}} \equiv \text{Balance}_{\text{post}}$.
-7. Aislamiento de Peak Equity: congelación ante cotizaciones `STALE`, `OFFLINE` o `isSpike`.
-8. Prop Firm Daily Loss: integración de floating loss negativo sin duplicar comisiones ya cerradas.
+### 8. Precisión Decimal y Demarcación de Margen
 
-### 9. Riesgos Técnicos y Limitaciones Conocidas
-* **Conversión Forex Intradía**: Mientras Finnhub permanezca PENDIENTE, los pares Forex con divisa de cotización distinta a la divisa de cuenta utilizarán tasas de conversión directas configuradas o Frankfurter diario para referencia.
-* **Margen de Brokers No Estándar**: En CFDs con márgenes dinámicos por tramos, TradeRisk Manager mantendrá el margen como no disponible a menos que el usuario especifique el apalancamiento de la cuenta.
+* **Aritmética Segura**: Uso de `src/lib/risk-engine/precision.ts` (`roundDecimal`, `safeDivide`, `sumPnL`).
+* **Segregación Estricta de Margen**:
+  - No se confunde en ningún caso el **margen utilizado** (garantía retenida por el broker) con la **pérdida potencial** (`CapitalRiskAtSL`).
+  - Si faltan datos de apalancamiento o requisitos de margen del broker, `usedMargin` y `freeMargin` se marcan explícitamente como `undefined` (`isMarginEstimated: false`), evitando presentar cálculos inventados.
 
-### 10. Archivos a Crear y Modificar
+---
+
+### 9. Plan de Pruebas Unitarias Deterministas (`src/__tests__/valuation-engine.test.ts`)
+
+Se diseñará una suite de pruebas que valide exhaustivamente:
+1. **Long Spot y USD-M**: Valoración a Bid deduciendo comisiones de salida.
+2. **Short Spot**:
+   - Bloqueo con `INOPERABLE_SPOT_SHORT_WITHOUT_BORROWING` en cuentas de contado puro.
+   - Valoración a Ask deduciendo costes de préstamo en cuentas con margen habilitado.
+3. **Coin-M Inverso**:
+   - Asimetría no lineal del PnL en BTC.
+   - Conversión exacta a USD y EUR.
+4. **Daily Loss Intradía**:
+   - Aislamiento de pérdidas flotantes previas al inicio de la sesión.
+   - Verificación de que trades cerrados durante el día y variación de abiertos satisfacen $\text{DailyNetPerformance} \equiv \text{Equity}_{\text{now}} - \text{Equity}_{\text{start}}$.
+5. **Dynamic Open Risk**:
+   - Long y Short con SL en beneficios ($\text{CapitalRiskAtSL} \equiv 0.00$).
+   - $\text{MarkToStopDistance}$ cuantificando la devolución de beneficio flotante.
+   - Mercado que cruzó el SL ($\text{MarkToStopDistance} \equiv 0.00$).
+6. **Conciliación Contable**:
+   - $\text{Equity}_{\text{pre}} \equiv \text{Balance}_{\text{post}}$ ante ejecución perfecta.
+   - Descomposición exacta de `ExecutionVariance` en slippage y comisiones reales.
+7. **Congelamiento de Peak Equity**:
+   - Congelación de actualización de HWM ante cotizaciones `STALE`, `OFFLINE` o `isSpike`.
+
+---
+
+### 10. Riesgos Técnicos y Limitaciones Conocidas
+
+* **Conversión Forex Intradía**: Al permanecer Finnhub PENDIENTE, los pares Forex con divisa de cotización distinta a la de la cuenta emplearán tasas directas configuradas o la tasa diaria de referencia de Frankfurter.
+* **Márgenes Dinámicos por Tramos**: En brokers de CFDs con tramos variables, el margen libre solo se reportará si se proporcionan los parámetros de apalancamiento exactos.
+
+---
+
+### 11. Archivos que se Crearán y Modificarán
+
 * **Archivos Nuevos**:
   - `src/lib/valuation/types.ts`
   - `src/lib/valuation/calculators/spot.ts`
@@ -1495,17 +1606,20 @@ Se creará `src/__tests__/valuation-engine.test.ts` con cobertura de los escenar
   - `src/lib/valuation/engine.ts`
   - `src/lib/valuation/index.ts`
   - `src/__tests__/valuation-engine.test.ts`
-* **Archivos a Modificar (Mínimos y No Invasivos)**:
-  - `src/lib/types.ts`: Re-exportar o alinear interfaces de snapshot de valuación garantizando compatibilidad retrospectiva.
-  - `PROJECT_CONTEXT.md`: Actualización del estado de avance.
-* **Archivos Intactos**: 0 modificaciones en componentes de UI, dashboards ni motores de ruina/Monte Carlo.
+* **Archivos Existentes**:
+  - `src/lib/types.ts`: Re-exportación alineada de snapshots sin romper interfaces previas.
+  - `PROJECT_CONTEXT.md`: Registro de avances.
+  - **Archivos Intactos**: 0 modificaciones en componentes de UI, dashboards ni motores de ruina/Monte Carlo.
 
-### 11. Estrategia de Migración Compatible
-* El motor de valuación funcionará como una capa pura sobre el estado contable existente. Si no hay conexión o no hay cotizaciones, el sistema se mantiene en modo `manual_closed`, donde `equity = balance`, preservando el 100% de la funcionalidad de las Fases 1 a 7.
+---
+
+### 12. Estrategia de Migración Compatible
+
+El motor actuará como una capa pura sobre el estado contable existente. Si no existen posiciones abiertas o se interrumpe la conexión, el sistema conmuta a modo `manual_closed` ($\text{Equity} = \text{Balance}$), garantizando el 100% de la funcionalidad de las Fases 1 a 7.
 
 ---
 
 ## 26. Próximos Pasos (Esperando Autorización Formal para Implementar Paso 8.2)
 
-* Revisión y visto bueno del plan técnico detallado del Paso 8.2.
+* Revisión y visto bueno de esta formulación matemática corregida.
 * Una vez concedida la autorización expresa, apertura e implementación secuencial del código del **Paso 8.2**.
