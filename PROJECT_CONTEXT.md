@@ -878,7 +878,43 @@ En la Fase 6 se ejecutó una auditoría funcional integral y de coherencia de da
 
 ---
 
-## 21. Próximos Pasos (Fase 7)
+## 21. FASE 6.1 — Validación Final Contable, Equity y Persistencia Real (Completada)
+
+En la Fase 6.1 se llevó a cabo una auditoría exhaustiva de cierre sobre la contabilidad de doble entrada, la demarcación entre balance, equity y open risk, el drawdown institucional y la persistencia distribuida.
+
+### 1. Auditoría Contable y Reversión de Libro Mayor
+- **Comisiones y PnL Neto**: Verificado formalmente que `netResult = trade.result - trade.commissions` se descuenta exactamente una única vez a lo largo de todo el ciclo contable de la aplicación.
+- **Delta Contable en Edición (`updateTrade`)**: Probado que modificar una operación cerrada (precio de salida o comisiones) calcula de forma atómica el diferencial `diff = newNet - oldNet` y actualiza el saldo de la cuenta sin derivas ni acumulaciones erróneas.
+- **Reversión Contable en Eliminación (`deleteTrade`)**: Probado que eliminar una operación cerrada revierte exactamente el importe neto `balance -= (trade.result - commissions)`, restaurando el saldo anterior y emitiendo un tombstone de borrado distribuido.
+- **Trampas de Comisiones**: Operaciones con resultado bruto positivo pero inferior a comisiones (ej. bruto +\$15, comisión \$25 $\to$ neto -\$10) son clasificadas estrictamente como pérdidas en `calculateStatistics`, `calculateExpectancy` y el motor de drawdown.
+- **Inmutabilidad en Importación de Backups**: Comprobado que la importación mediante `applyBackup` (tanto en modo `replace` como `merge`) preserva el saldo real exportado sin volver a aplicar resultados ni duplicar comisiones.
+
+### 2. Demarcación Rigurosa entre Balance, Equity y Open Risk
+- **Diferenciación Conceptual**:
+  - **Balance**: Capital inicial más resultados netos acumulados de operaciones cerradas.
+  - **Equity**: Balance más PnL flotante (en modo manual actual equivale a balance al no existir feed en vivo de cotizaciones).
+  - **Open Risk**: Pérdida máxima potencial estimada hasta el Stop Loss en operaciones abiertas ($\sum |\text{entry} - \text{SL}| \cdot \text{size}$). No se confunde ni se presenta como PnL flotante.
+  - **Drawdown**: Caída respecto al High-Water Mark histórico de balance o equity según el modelo.
+- **Transparencia en la Interfaz (Dashboard)**:
+  - La tarjeta de Balance y Equidad indica explícitamente: `Equidad: $X (Modo manual · Sin feed en vivo)` ante posiciones abiertas.
+  - La tarjeta de Open Risk indica: `X op. abierta(s) · Riesgo potencial a SL`.
+- **Arquitectura para Futuros Feeds de Mercado**:
+  - Se incorporaron las interfaces canónicas `MarketPriceQuote`, `FloatingPositionValuation` y `AccountValuationSnapshot` en `src/lib/types.ts` para conectar futuros proveedores (Binance, Interactive Brokers) sin alterar el core contable.
+
+### 3. Auditoría de Supabase y Protocolo de Pruebas Reales
+- **Código Auditado**: RLS multi-tenant con chequeo `auth.uid() = user_id`, soft-deletes con tombstones (`deleted_at`), resolución determinista LWW basada en timestamps, versiones y hash canónico, y migración segura de datos locales a la nube.
+- **Protocolo de Pruebas Reales**: La suite `supabase-integration.real.test.ts` se mantiene condicionada a la existencia de credenciales reales no-mockeadas. Se documentó el protocolo seguro para aprovisionar un proyecto de staging/test sin tocar datos de producción ni exponer `SERVICE_ROLE_KEY`.
+
+### 4. Suite de Pruebas de Regresión y Estado Global
+- Nuevo archivo de test: `src/__tests__/regression-accounting-equity-persistence.test.ts` (8 pruebas completas de ciclo contable, delta, reversión, importación, aislamiento y cuarentena).
+- Estado global de Vitest: **258 tests aprobados** (24 archivos de prueba), 6 tests de Supabase real omitidos condicionalmente.
+- TypeScript (`npx tsc --noEmit`): 0 errores.
+- ESLint (`npm run lint`): 0 advertencias, 0 errores.
+- Compilación de producción (`npm run build`): Prerenderizado de 37 rutas exitoso.
+
+---
+
+## 22. Próximos Pasos (Fase 7)
 
 * Exportación de informes cuantitativos en formato PDF y hojas de cálculo CSV para auditorías de riesgo y prop firms.
 * Conexión con proveedores de datos de mercado en tiempo real (Binance API, Interactive Brokers Web API).
