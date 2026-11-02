@@ -6,6 +6,11 @@ import type { Direction } from '../../types';
 import type { MarketPriceQuote } from '../../market-data/types';
 import type { FloatingPositionValuation } from '../types';
 import { roundDecimal } from '../../risk-engine/precision';
+import {
+  validateTradeCoreParams,
+  validateQuotePrices,
+  isNonNegativeFinite,
+} from '../validation';
 
 export interface StocksValuationInput {
   tradeId: string;
@@ -53,21 +58,61 @@ export function valueStocksPosition(input: StocksValuationInput): FloatingPositi
     marketQuote: quote,
   };
 
-  if (!quote || !Number.isFinite(quote.bid) || !Number.isFinite(quote.ask) || quote.bid <= 0 || quote.ask <= 0) {
+  // 1. Validation of market quote
+  if (!quote) {
     return {
       ...baseResult,
       status: 'unvaluable',
       errorCode: 'NO_MARKET_QUOTE',
-      reason: 'No valid market quote available for Stocks valuation',
+      reason: 'No market quote provided',
+    };
+  }
+  const quoteVal = validateQuotePrices(quote);
+  if (!quoteVal.isValid) {
+    return {
+      ...baseResult,
+      status: 'unvaluable',
+      errorCode: quoteVal.errorCode,
+      reason: quoteVal.reason,
     };
   }
 
-  if (!Number.isFinite(entryPrice) || entryPrice <= 0 || !Number.isFinite(shares) || shares <= 0) {
+  // 2. Validation of numeric trade parameters
+  const tradeVal = validateTradeCoreParams(entryPrice, shares);
+  if (!tradeVal.isValid) {
+    return {
+      ...baseResult,
+      status: 'unvaluable',
+      errorCode: tradeVal.errorCode,
+      reason: tradeVal.reason,
+    };
+  }
+
+  // 3. Validation of stock financial parameters
+  if (commissionPerShare !== undefined && !isNonNegativeFinite(commissionPerShare)) {
     return {
       ...baseResult,
       status: 'unvaluable',
       errorCode: 'INVALID_NUMERIC',
-      reason: 'Invalid entryPrice or share count',
+      reason: `Invalid commissionPerShare: expected non-negative finite number, received ${String(commissionPerShare)}`,
+    };
+  }
+
+  if (borrowRate !== undefined && !isNonNegativeFinite(borrowRate)) {
+    return {
+      ...baseResult,
+      status: 'unvaluable',
+      errorCode: 'INVALID_NUMERIC',
+      reason: `Invalid borrowRate: expected non-negative finite number, received ${String(borrowRate)}`,
+    };
+  }
+
+  if (daysHeld !== undefined && !isNonNegativeFinite(daysHeld)) {
+    return {
+      ...baseResult,
+      status: 'unvaluable',
+      errorCode: 'INVALID_NUMERIC',
+      reason: `Invalid daysHeld: expected non-negative finite number, received ${String(daysHeld)}`,
     };
   }
 

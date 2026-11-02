@@ -6,6 +6,12 @@ import type { Direction } from '../../types';
 import type { MarketPriceQuote } from '../../market-data/types';
 import type { FloatingPositionValuation } from '../types';
 import { roundDecimal } from '../../risk-engine/precision';
+import {
+  validateTradeCoreParams,
+  validateQuotePrices,
+  validateSpotBorrowParams,
+  isNonNegativeFinite,
+} from '../validation';
 
 export interface SpotValuationInput {
   tradeId: string;
@@ -61,22 +67,52 @@ export function valueSpotPosition(input: SpotValuationInput): FloatingPositionVa
   };
 
   // 1. Validation of market quote
-  if (!quote || !Number.isFinite(quote.bid) || !Number.isFinite(quote.ask) || quote.bid <= 0 || quote.ask <= 0) {
+  if (!quote) {
     return {
       ...baseResult,
       status: 'unvaluable',
       errorCode: 'NO_MARKET_QUOTE',
-      reason: 'No valid market quote available for spot valuation',
+      reason: 'No market quote provided',
+    };
+  }
+  const quoteVal = validateQuotePrices(quote);
+  if (!quoteVal.isValid) {
+    return {
+      ...baseResult,
+      status: 'unvaluable',
+      errorCode: quoteVal.errorCode,
+      reason: quoteVal.reason,
     };
   }
 
   // 2. Validation of numeric trade parameters
-  if (!Number.isFinite(entryPrice) || entryPrice <= 0 || !Number.isFinite(size) || size <= 0) {
+  const tradeVal = validateTradeCoreParams(entryPrice, size);
+  if (!tradeVal.isValid) {
+    return {
+      ...baseResult,
+      status: 'unvaluable',
+      errorCode: tradeVal.errorCode,
+      reason: tradeVal.reason,
+    };
+  }
+
+  // 3. Validation of optional fee & borrow parameters
+  if (closingFeeRate !== undefined && !isNonNegativeFinite(closingFeeRate)) {
     return {
       ...baseResult,
       status: 'unvaluable',
       errorCode: 'INVALID_NUMERIC',
-      reason: 'Invalid entryPrice or position size',
+      reason: `Invalid closingFeeRate: expected non-negative finite number, received ${String(closingFeeRate)}`,
+    };
+  }
+
+  const borrowVal = validateSpotBorrowParams(daysHeld, dailyBorrowRate, borrowCapacityAvailable);
+  if (!borrowVal.isValid) {
+    return {
+      ...baseResult,
+      status: 'unvaluable',
+      errorCode: borrowVal.errorCode,
+      reason: borrowVal.reason,
     };
   }
 

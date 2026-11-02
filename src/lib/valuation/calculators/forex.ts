@@ -6,6 +6,12 @@ import type { Direction } from '../../types';
 import type { MarketPriceQuote } from '../../market-data/types';
 import type { FloatingPositionValuation } from '../types';
 import { roundDecimal, calcPips } from '../../risk-engine/precision';
+import {
+  validateTradeCoreParams,
+  validateQuotePrices,
+  validateForexParams,
+  isNonNegativeFinite,
+} from '../validation';
 
 export interface ForexValuationInput {
   tradeId: string;
@@ -57,21 +63,62 @@ export function valueForexPosition(input: ForexValuationInput): FloatingPosition
     marketQuote: quote,
   };
 
-  if (!quote || !Number.isFinite(quote.bid) || !Number.isFinite(quote.ask) || quote.bid <= 0 || quote.ask <= 0) {
+  // 1. Validation of market quote
+  if (!quote) {
     return {
       ...baseResult,
       status: 'unvaluable',
       errorCode: 'NO_MARKET_QUOTE',
-      reason: 'No valid market quote available for Forex valuation',
+      reason: 'No market quote provided',
+    };
+  }
+  const quoteVal = validateQuotePrices(quote);
+  if (!quoteVal.isValid) {
+    return {
+      ...baseResult,
+      status: 'unvaluable',
+      errorCode: quoteVal.errorCode,
+      reason: quoteVal.reason,
     };
   }
 
-  if (!Number.isFinite(entryPrice) || entryPrice <= 0 || !Number.isFinite(lots) || lots <= 0) {
+  // 2. Validation of numeric trade parameters
+  const tradeVal = validateTradeCoreParams(entryPrice, lots);
+  if (!tradeVal.isValid) {
+    return {
+      ...baseResult,
+      status: 'unvaluable',
+      errorCode: tradeVal.errorCode,
+      reason: tradeVal.reason,
+    };
+  }
+
+  // 3. Validation of Forex parameters
+  const fxVal = validateForexParams(pipSize, pipValueInQuote, quoteToAccountFxRate);
+  if (!fxVal.isValid) {
+    return {
+      ...baseResult,
+      status: 'unvaluable',
+      errorCode: fxVal.errorCode,
+      reason: fxVal.reason,
+    };
+  }
+
+  if (closingCommission !== undefined && !isNonNegativeFinite(closingCommission)) {
     return {
       ...baseResult,
       status: 'unvaluable',
       errorCode: 'INVALID_NUMERIC',
-      reason: 'Invalid entryPrice or lot size',
+      reason: `Invalid closingCommission: expected non-negative finite number, received ${String(closingCommission)}`,
+    };
+  }
+
+  if (swap !== undefined && (typeof swap !== 'number' || !Number.isFinite(swap))) {
+    return {
+      ...baseResult,
+      status: 'unvaluable',
+      errorCode: 'INVALID_NUMERIC',
+      reason: `Invalid swap: expected finite number, received ${String(swap)}`,
     };
   }
 

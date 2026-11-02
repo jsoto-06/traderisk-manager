@@ -11,6 +11,7 @@ import type {
   MarginMetricsSnapshot,
 } from './types';
 import { roundDecimal } from '../risk-engine/precision';
+import { classifyInstrument, inferFuturesMultiplier } from './catalog';
 import { valueSpotPosition, type SpotValuationInput } from './calculators/spot';
 import { valueUsdmPosition, type UsdmValuationInput } from './calculators/usdm';
 import { valueCoinMPosition, type CoinMValuationInput } from './calculators/coinm';
@@ -87,14 +88,13 @@ export class MultiAssetValuationEngine {
     const tradeId = trade.id;
     const accountId = trade.accountId;
 
-    // Detect asset class / instrument model
-    const instrumentType = options.instrumentType ?? this.inferInstrumentType(asset, quote);
+    // Detect asset class / instrument model using centralized catalog
+    const instrumentType = classifyInstrument(asset, quote, options.instrumentType);
 
     let valuation: FloatingPositionValuation;
 
     switch (instrumentType) {
-      case 'coinm':
-      case 'coinm_inverse': {
+      case 'coinm': {
         const input: CoinMValuationInput = {
           tradeId,
           accountId,
@@ -113,8 +113,7 @@ export class MultiAssetValuationEngine {
         break;
       }
 
-      case 'usdm':
-      case 'perpetual': {
+      case 'usdm': {
         const input: UsdmValuationInput = {
           tradeId,
           accountId,
@@ -131,8 +130,7 @@ export class MultiAssetValuationEngine {
         break;
       }
 
-      case 'forex':
-      case 'forex_lot': {
+      case 'forex': {
         const isJpy = asset.toUpperCase().includes('JPY');
         const input: ForexValuationInput = {
           tradeId,
@@ -161,7 +159,7 @@ export class MultiAssetValuationEngine {
           size,
           entryPrice,
           quote,
-          multiplier: options.multiplier ?? this.inferFuturesMultiplier(asset),
+          multiplier: options.multiplier ?? inferFuturesMultiplier(asset),
           commissionPerContract: options.commissionPerContract ?? 2.05,
         };
         valuation = valueFuturesPosition(input);
@@ -185,8 +183,7 @@ export class MultiAssetValuationEngine {
         break;
       }
 
-      case 'spot':
-      default: {
+      case 'spot': {
         const input: SpotValuationInput = {
           tradeId,
           accountId,
@@ -204,6 +201,26 @@ export class MultiAssetValuationEngine {
         };
         valuation = valueSpotPosition(input);
         break;
+      }
+
+      case 'unknown':
+      default: {
+        return {
+          tradeId,
+          accountId,
+          asset,
+          direction,
+          size,
+          entryPrice,
+          exitPrice: 0,
+          status: 'unvaluable',
+          isValuationAvailable: false,
+          errorCode: 'UNSUPPORTED_ASSET_CLASS',
+          reason: `Instrument ${asset} cannot be reliably classified into a supported financial model`,
+          isStopLossConfigured: false,
+          isStopCrossed: false,
+          marketQuote: quote,
+        };
       }
     }
 
@@ -408,39 +425,11 @@ export class MultiAssetValuationEngine {
   }
 
   private inferInstrumentType(asset: string, quote?: MarketPriceQuote): string {
-    if (quote?.contractType === 'perpetual' && quote.st === 2) return 'coinm';
-    if (quote?.contractType === 'perpetual') return 'usdm';
-
-    const normalized = asset.toUpperCase();
-    if (normalized.includes('_PERP') || normalized.includes(':PERP')) {
-      if (normalized.includes('USD_') || normalized.startsWith('BTCUSD') || normalized.startsWith('ETHUSD')) {
-        return 'coinm';
-      }
-      return 'usdm';
-    }
-    if (normalized.includes('/') && (normalized.includes('USD') || normalized.includes('EUR') || normalized.includes('JPY') || normalized.includes('GBP'))) {
-      if (normalized.includes('BTC') || normalized.includes('ETH') || normalized.includes('SOL')) {
-        return 'spot';
-      }
-      return 'forex';
-    }
-    if (normalized.startsWith('ES') || normalized.startsWith('NQ') || normalized.startsWith('MES') || normalized.startsWith('MNQ') || normalized.startsWith('CL')) {
-      return 'futures';
-    }
-    return 'spot';
+    return classifyInstrument(asset, quote);
   }
 
   private inferFuturesMultiplier(asset: string): number {
-    const symbol = asset.toUpperCase();
-    if (symbol.startsWith('ES')) return 50;
-    if (symbol.startsWith('MES')) return 5;
-    if (symbol.startsWith('NQ')) return 20;
-    if (symbol.startsWith('MNQ')) return 2;
-    if (symbol.startsWith('CL')) return 1000;
-    if (symbol.startsWith('MCL')) return 100;
-    if (symbol.startsWith('GC')) return 100;
-    if (symbol.startsWith('MGC')) return 10;
-    return 1;
+    return inferFuturesMultiplier(asset);
   }
 
   private computeMarginMetrics(

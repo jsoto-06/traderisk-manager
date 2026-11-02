@@ -6,6 +6,12 @@ import type { Direction } from '../../types';
 import type { MarketPriceQuote } from '../../market-data/types';
 import type { FloatingPositionValuation } from '../types';
 import { roundDecimal } from '../../risk-engine/precision';
+import {
+  validateTradeCoreParams,
+  validateQuotePrices,
+  validateCoinMParams,
+  isNonNegativeFinite,
+} from '../validation';
 
 export interface CoinMValuationInput {
   tradeId: string;
@@ -60,21 +66,62 @@ export function valueCoinMPosition(input: CoinMValuationInput): FloatingPosition
     marketQuote: quote,
   };
 
-  if (!quote || !Number.isFinite(quote.bid) || !Number.isFinite(quote.ask) || quote.bid <= 0 || quote.ask <= 0) {
+  // 1. Validation of market quote
+  if (!quote) {
     return {
       ...baseResult,
       status: 'unvaluable',
       errorCode: 'NO_MARKET_QUOTE',
-      reason: 'No valid market quote available for Coin-M valuation',
+      reason: 'No market quote provided',
+    };
+  }
+  const quoteVal = validateQuotePrices(quote);
+  if (!quoteVal.isValid) {
+    return {
+      ...baseResult,
+      status: 'unvaluable',
+      errorCode: quoteVal.errorCode,
+      reason: quoteVal.reason,
     };
   }
 
-  if (!Number.isFinite(entryPrice) || entryPrice <= 0 || !Number.isFinite(contracts) || contracts <= 0) {
+  // 2. Validation of numeric trade parameters
+  const tradeVal = validateTradeCoreParams(entryPrice, contracts);
+  if (!tradeVal.isValid) {
+    return {
+      ...baseResult,
+      status: 'unvaluable',
+      errorCode: tradeVal.errorCode,
+      reason: tradeVal.reason,
+    };
+  }
+
+  // 3. Validation of Coin-M specific parameters
+  const coinMVal = validateCoinMParams(contractSizeUSD, usdToAccountFxRate);
+  if (!coinMVal.isValid) {
+    return {
+      ...baseResult,
+      status: 'unvaluable',
+      errorCode: coinMVal.errorCode,
+      reason: coinMVal.reason,
+    };
+  }
+
+  if (accruedFundingBase !== undefined && (typeof accruedFundingBase !== 'number' || !Number.isFinite(accruedFundingBase))) {
     return {
       ...baseResult,
       status: 'unvaluable',
       errorCode: 'INVALID_NUMERIC',
-      reason: 'Invalid entryPrice or contract count',
+      reason: `Invalid accruedFundingBase: expected finite number, received ${String(accruedFundingBase)}`,
+    };
+  }
+
+  if (closingFeeRate !== undefined && !isNonNegativeFinite(closingFeeRate)) {
+    return {
+      ...baseResult,
+      status: 'unvaluable',
+      errorCode: 'INVALID_NUMERIC',
+      reason: `Invalid closingFeeRate: expected non-negative finite number, received ${String(closingFeeRate)}`,
     };
   }
 

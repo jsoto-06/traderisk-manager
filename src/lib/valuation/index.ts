@@ -3,6 +3,8 @@
 // =============================================================================
 
 export * from './types';
+export * from './catalog';
+export * from './validation';
 export * from './timezone';
 export * from './risk';
 export * from './daily-loss';

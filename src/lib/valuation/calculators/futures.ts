@@ -6,6 +6,12 @@ import type { Direction } from '../../types';
 import type { MarketPriceQuote } from '../../market-data/types';
 import type { FloatingPositionValuation } from '../types';
 import { roundDecimal } from '../../risk-engine/precision';
+import {
+  validateTradeCoreParams,
+  validateQuotePrices,
+  validateFuturesMultiplier,
+  isNonNegativeFinite,
+} from '../validation';
 
 export interface FuturesValuationInput {
   tradeId: string;
@@ -52,21 +58,53 @@ export function valueFuturesPosition(input: FuturesValuationInput): FloatingPosi
     marketQuote: quote,
   };
 
-  if (!quote || !Number.isFinite(quote.bid) || !Number.isFinite(quote.ask) || quote.bid <= 0 || quote.ask <= 0) {
+  // 1. Validation of market quote
+  if (!quote) {
     return {
       ...baseResult,
       status: 'unvaluable',
       errorCode: 'NO_MARKET_QUOTE',
-      reason: 'No valid market quote available for Futures valuation',
+      reason: 'No market quote provided',
+    };
+  }
+  const quoteVal = validateQuotePrices(quote);
+  if (!quoteVal.isValid) {
+    return {
+      ...baseResult,
+      status: 'unvaluable',
+      errorCode: quoteVal.errorCode,
+      reason: quoteVal.reason,
     };
   }
 
-  if (!Number.isFinite(entryPrice) || entryPrice <= 0 || !Number.isFinite(contracts) || contracts <= 0 || !Number.isFinite(multiplier) || multiplier <= 0) {
+  // 2. Validation of numeric trade parameters
+  const tradeVal = validateTradeCoreParams(entryPrice, contracts);
+  if (!tradeVal.isValid) {
+    return {
+      ...baseResult,
+      status: 'unvaluable',
+      errorCode: tradeVal.errorCode,
+      reason: tradeVal.reason,
+    };
+  }
+
+  // 3. Validation of futures multiplier
+  const multVal = validateFuturesMultiplier(multiplier);
+  if (!multVal.isValid) {
+    return {
+      ...baseResult,
+      status: 'unvaluable',
+      errorCode: multVal.errorCode,
+      reason: multVal.reason,
+    };
+  }
+
+  if (commissionPerContract !== undefined && !isNonNegativeFinite(commissionPerContract)) {
     return {
       ...baseResult,
       status: 'unvaluable',
       errorCode: 'INVALID_NUMERIC',
-      reason: 'Invalid entryPrice, contract count, or multiplier',
+      reason: `Invalid commissionPerContract: expected non-negative finite number, received ${String(commissionPerContract)}`,
     };
   }
 

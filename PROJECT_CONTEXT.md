@@ -1733,8 +1733,68 @@ El **Paso 8.2 (Motor de Valuación Cuantitativa en Tiempo Real)** ha sido implem
 
 ---
 
-## 27. Próximos Pasos (Preparación del Paso 8.3)
+## 27. FASE 8.2.1 — Corrección y Blindaje del Motor de Valoración Multi-Activo
 
-* Conexión reactiva entre los adaptadores de datos de mercado de Binance (`src/lib/market-data/`) y el motor de valuación (`MultiAssetValuationEngine`).
-* Suscripción en tiempo real a streams públicos según las posiciones abiertas del usuario.
-* Visualización en la interfaz de usuario preservando la estricta naturaleza manual de TradeRisk Manager (0 ejecución automática, 0 órdenes de mercado automáticas, control 100% en manos del usuario).
+### Bloque A: Clasificación de Instrumentos Financieros (H6) y Validación Numérica Estricta (H7)
+
+> [!IMPORTANT]
+> **DELIMITACIÓN ESTRICTA DE AUTORIZACIÓN**:
+> Conforme al mandato de delimitación, se ha implementado de forma exclusiva y quirúrgica el **Bloque A** (H6 y H7).
+> Los bloques H1 (Integridad de Equity y High-Water Mark), H2 (Riesgo dinámico multi-activo), H3 (Daily Loss y snapshots), H4 (Margen y exposición), H5 (Conciliación contable de ejecuciones), H8 (Estados de snapshots) y cualquier integración del Paso 8.3 permanecen **expresamente NO autorizados y pendientes**.
+
+#### 1. H6 — Clasificación Centralizada de Instrumentos Financieros (`src/lib/valuation/catalog.ts`)
+- **Catálogo Centralizado**:
+  - Conjunto canónico de divisas fiat ISO-4217 (`ISO_FIAT_CURRENCIES` con 24 divisas: USD, EUR, GBP, JPY, AUD, CAD, CHF, NZD, SEK, NOK, etc.).
+  - Conjunto de stablecoins (`STABLECOINS`: USDT, USDC, BUSD, DAI, TUSD, USDD, FDUSD, USDE).
+  - Conjunto de criptoactivos de alta capitalización (`KNOWN_CRYPTO_ASSETS`: BTC, ETH, SOL, BNB, XRP, ADA, DOGE, AVAX, etc.).
+  - Mapa de multiplicadores estándar de futuros CME (`FUTURES_MULTIPLIERS`: ES: 50, MES: 5, NQ: 20, MNQ: 2, CL: 1000, GC: 100, ZB: 1000, etc.).
+  - Función de inferencia de multiplicador: `inferFuturesMultiplier(asset: string): number`.
+- **Motor Jerárquico de Clasificación (`classifyInstrument`)**:
+  - **Prioridad 1**: `instrumentType` explícito configurado en opciones o metadatos de la posición.
+  - **Prioridad 2**: Metadatos de la cotización (`quote.provider === 'binance_coinm' || quote.st === 2` $\implies$ `'coinm'`, `quote.provider === 'binance_usdm' || quote.st === 1` $\implies$ `'usdm'`).
+  - **Prioridad 3**: Derivados perpetuos (`_PERP`, `:PERP`). Si la cotización es contra fiat USD (ej. `BTCUSD_PERP`, `BTC/USD:PERP`) $\implies$ `'coinm'`. Si es contra stablecoins (ej. `BTC/USDT:PERP`, `BTCUSDT_PERP`) $\implies$ `'usdm'`.
+  - **Prioridad 4**: Futuros tradicionales CME por símbolo o sufijo continuo (`ES`, `NQ!`, `CL1!`) $\implies$ `'futures'`.
+  - **Prioridad 5**: Pares con barra (`/`):
+    - Base y Quote en `ISO_FIAT_CURRENCIES` (ej. `EUR/USD`, `AUD/CAD`, `NZD/CHF`, `CAD/CHF`) $\implies$ estrictamente `'forex'` (resuelve el error donde cruces sin USD se degradaban a Spot).
+    - Quote en `STABLECOINS` (ej. `ADA/USDT`, `XRP/USDT`, `BNB/USDT`) $\implies$ estrictamente `'spot'` (elimina el falso positivo de clasificación como Forex por contener la subcadena "USD").
+    - Cripto contra Fiat (ej. `BTC/EUR`, `ETH/GBP`) $\implies$ `'spot'`.
+  - **Prioridad 6**: Pares sin barra:
+    - 6 caracteres fiat (ej. `EURUSD`, `USDJPY`, `GBPJPY`) $\implies$ `'forex'`.
+    - Sufijo stablecoin (ej. `BTCUSDT`, `SOLUSDC`) $\implies$ `'spot'`.
+  - **Prioridad 7**: Criptoactivos conocidos individuales $\implies$ `'spot'`.
+  - **Prioridad 8**: Tickers de acciones conocidas $\implies$ `'stocks'`.
+  - **Fallback Seguro**: Si el activo no puede ser identificado fehacientemente, retorna `'unknown'`. `MultiAssetValuationEngine.valueTrade` intercepta `'unknown'` devolviendo inmediatamente `status: 'unvaluable'`, `isValuationAvailable: false` y `errorCode: 'UNSUPPORTED_ASSET_CLASS'`.
+
+#### 2. H7 — Validación Numérica Estricta (`src/lib/valuation/validation.ts`)
+- **Validadores Centralizados**:
+  - `isPositiveFinite(val)`: Comprueba que el número sea finito, no-NaN y $> 0$.
+  - `isNonNegativeFinite(val)`: Comprueba que el número sea finito, no-NaN y $\ge 0$.
+  - `validateTradeCoreParams(entryPrice, size)`: Rechaza parámetros de entrada no finitos, negativos o nulos.
+  - `validateQuotePrices(quote)`: Rechaza cotizaciones nulas, no finitas, no positivas o libros invertidos/cruzados (`bid > ask`).
+  - `validateForexParams(pipSize, pipValueInQuote, quoteToAccountFxRate, closingCommission, swap)`: Impone finitud y positividad en pips y tasas FX, y no negatividad en costes.
+  - `validateFuturesMultiplier(multiplier, commissionPerContract)`: Rechaza multiplicadores $\le 0$ o comisiones negativas.
+  - `validateCoinMParams(contractSizeUSD, usdToAccountFxRate, closingFeeRate, accruedFundingBase)`: Impone tamaño de contrato positivo y tasa FX de cuenta válida.
+  - `validateSpotBorrowParams(dailyBorrowRate, daysHeld, closingFeeRate)`: Valida tasas de interés y días de tenencia en préstamos para posiciones cortas.
+- **Blindaje en los Calculadores de Instrumentos**:
+  - `spot.ts`, `usdm.ts`, `coinm.ts`, `forex.ts`, `futures.ts`, `stocks.ts` interceptan anomalías numéricas (`NaN`, `Infinity`, división por cero o parámetros absurdos) y retornan `status: 'unvaluable'`, `isValuationAvailable: false` y `errorCode: 'INVALID_NUMERIC'`, erradicando cualquier propagación de `NaN` en equidad o riesgo.
+
+#### 3. Suite de Pruebas y Estado de Verificación
+- **Nuevo Archivo de Pruebas Unitarias**: `src/__tests__/valuation-classification-validation.test.ts` (19 pruebas deterministas cubriendo todos los casos de H6 y H7).
+- **Resultados de la Verificación**:
+  - Vitest: **347 pruebas pasando al 100%** (28 suites completas, 0 fallos, 6 tests omitidos condicionalmente de Supabase real).
+  - TypeScript (`npx tsc --noEmit`): 0 errores.
+  - ESLint (`npm run lint`): 0 advertencias, 0 errores.
+  - Next.js Turbopack Production Build (`npm run build`): Compilación exitosa de las 37 páginas estáticas y dinámicas.
+
+---
+
+## 28. Próximos Pasos (Pendientes de Autorización)
+
+* **Bloque B (H1, H2, H3, H4, H5, H8)**:
+  - H1: Integridad de Equity y High-Water Mark (congelación ante feeds stale/spike y cálculo seguro).
+  - H2: Riesgo dinámico multi-activo (segregación formal de SL original vs vigente en todos los activos).
+  - H3: Daily Loss intradía y persistencia de snapshots.
+  - H4: Supervisión de margen y apalancamiento efectivo.
+  - H5: Conciliación contable de ejecuciones.
+  - H8: Validación de estados de snapshots.
+* **Paso 8.3**: Integración reactiva entre adaptadores WebSocket de Binance y motor de valoración en la UI manual.
