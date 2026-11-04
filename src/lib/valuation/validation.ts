@@ -3,11 +3,14 @@
 // =============================================================================
 
 import type { MarketPriceQuote } from '../market-data/types';
+import type { ValuationErrorCode } from './types';
+
+const VALID_FEED_STATUSES = new Set(['live', 'stale', 'offline', 'manual']);
 
 /** Result of a numeric validation check */
 export interface NumericValidationResult {
   isValid: boolean;
-  errorCode?: 'INVALID_NUMERIC' | 'NO_MARKET_QUOTE';
+  errorCode?: ValuationErrorCode;
   reason?: string;
 }
 
@@ -43,7 +46,10 @@ export function validateTradeCoreParams(entryPrice: unknown, size: unknown): Num
 }
 
 /**
- * Validates market quote bid/ask prices.
+ * Validates market quote status and bid/ask prices.
+ * - Runtime check: rejects unknown, missing or malformed feed status with INVALID_MARKET_QUOTE.
+ * - Enforces positive finite bid and ask prices.
+ * - Rejects crossed order books (bid > ask).
  */
 export function validateQuotePrices(quote?: MarketPriceQuote | null): NumericValidationResult {
   if (!quote) {
@@ -51,6 +57,13 @@ export function validateQuotePrices(quote?: MarketPriceQuote | null): NumericVal
       isValid: false,
       errorCode: 'NO_MARKET_QUOTE',
       reason: 'Market quote is undefined or missing',
+    };
+  }
+  if (typeof quote.status !== 'string' || !VALID_FEED_STATUSES.has(quote.status)) {
+    return {
+      isValid: false,
+      errorCode: 'INVALID_MARKET_QUOTE',
+      reason: `Unrecognized or malformed market quote status: "${String(quote.status)}"`,
     };
   }
   if (!isPositiveFinite(quote.bid)) {

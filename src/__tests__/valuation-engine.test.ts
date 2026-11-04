@@ -726,18 +726,26 @@ describe('Quantitative Valuation Engine — Paso 8.2', () => {
       expect(offlineSnap.canUpdatePeakEquity).toBe(false);
     });
 
-    it('authorizes Peak Equity candidate when 100% of open positions have fresh, reliable quotes', () => {
-      const account = createMockAccount({ balance: 100000, equity: 100000 });
+    it('authorizes Peak Equity candidate when 100% of open positions have fresh, reliable quotes and verified HWM', () => {
+      const account = createMockAccount({ balance: 100000, equity: 100000, initialCapital: 100000 });
       const trade = createMockTrade({ id: 't1', asset: 'BTC/USDT', size: 1.0, entryPrice: 50000 });
 
       const liveQuotes = new Map([
         ['BTC/USDT', createMockQuote({ bid: 55000, ask: 55010, status: 'live' })],
       ]);
 
-      const snapshot = engine.valueAccount(account, [trade], { quotes: liveQuotes });
+      const snapshot = engine.valueAccount(account, [trade], {
+        quotes: liveQuotes,
+        historicalHwm: {
+          value: 100000,
+          isProvenanceVerified: true,
+          source: 'audit_ledger_reconstruction',
+        },
+      });
 
       expect(snapshot.isValuationComplete).toBe(true);
       expect(snapshot.isReliable).toBe(true);
+      expect(snapshot.hwmIntegrityStatus).toBe('VERIFIED');
       expect(snapshot.canUpdatePeakEquity).toBe(true);
       // Balance 100,000 + Floating (55000 - 50000 - 55 fee) = 104,945
       expect(snapshot.equity).toBe(104945);

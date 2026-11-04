@@ -4,7 +4,7 @@
 
 import type { Direction } from '../../types';
 import type { MarketPriceQuote } from '../../market-data/types';
-import type { FloatingPositionValuation } from '../types';
+import type { FloatingPositionValuation, PositionValuationStatus } from '../types';
 import { roundDecimal } from '../../risk-engine/precision';
 import {
   validateTradeCoreParams,
@@ -119,6 +119,22 @@ export function valueSpotPosition(input: SpotValuationInput): FloatingPositionVa
   const isSpike = quote.isSpike === true;
   const isStale = quote.status === 'stale';
   const isOffline = quote.status === 'offline';
+  const isManual = quote.status === 'manual';
+
+  let status: PositionValuationStatus;
+  if (isOffline) {
+    status = 'offline';
+  } else if (isStale) {
+    status = 'stale';
+  } else if (isSpike) {
+    status = 'spike';
+  } else if (isManual) {
+    status = 'manual';
+  } else if (quote.status === 'live') {
+    status = 'active';
+  } else {
+    status = 'unvaluable';
+  }
 
   // 3. Long Spot: valuation against Bid
   if (direction === 'long') {
@@ -131,11 +147,12 @@ export function valueSpotPosition(input: SpotValuationInput): FloatingPositionVa
     return {
       ...baseResult,
       exitPrice,
-      status: isOffline ? 'offline' : isStale ? 'stale' : 'active',
+      status,
       isValuationAvailable: true,
       isSpike,
       isStale,
       isOffline,
+      isManual,
       grossPnL,
       estimatedClosingFee,
       estimatedExitCosts,
@@ -157,6 +174,7 @@ export function valueSpotPosition(input: SpotValuationInput): FloatingPositionVa
       isSpike,
       isStale,
       isOffline,
+      isManual,
     };
   }
 
@@ -172,6 +190,7 @@ export function valueSpotPosition(input: SpotValuationInput): FloatingPositionVa
       isSpike,
       isStale,
       isOffline,
+      isManual,
     };
   }
 
@@ -187,6 +206,7 @@ export function valueSpotPosition(input: SpotValuationInput): FloatingPositionVa
       isSpike,
       isStale,
       isOffline,
+      isManual,
     };
   }
 
@@ -202,6 +222,7 @@ export function valueSpotPosition(input: SpotValuationInput): FloatingPositionVa
       isSpike,
       isStale,
       isOffline,
+      isManual,
     };
   }
 
@@ -217,11 +238,12 @@ export function valueSpotPosition(input: SpotValuationInput): FloatingPositionVa
   return {
     ...baseResult,
     exitPrice,
-    status: isOffline ? 'offline' : isStale ? 'stale' : 'active',
+    status,
     isValuationAvailable: true,
     isSpike,
     isStale,
     isOffline,
+    isManual,
     grossPnL,
     borrowingCosts,
     estimatedClosingFee,

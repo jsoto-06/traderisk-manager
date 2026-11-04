@@ -1788,13 +1788,59 @@ El **Paso 8.2 (Motor de Valuación Cuantitativa en Tiempo Real)** ha sido implem
 
 ---
 
+### Bloque B1: Prioridad P0 — H1: Integridad de Equity y High-Water Mark
+
+> [!IMPORTANT]
+> **DELIMITACIÓN ESTRICTA DE AUTORIZACIÓN**:
+> Conforme a la autorización formal para B1, se ha implementado de forma exclusiva y quirúrgica el **Bloque B1 (H1)**.
+> Los bloques H2 (Riesgo dinámico multi-activo), H3 (Daily Loss y snapshots), H4 (Margen y exposición), H5 (Conciliación contable de ejecuciones), H8 (Estados de snapshots) y cualquier integración del Paso 8.3 permanecen **expresamente NO autorizados y pendientes**.
+
+#### 1. Contrato Formal de Procedencia Histórica del High-Water Mark (`HistoricalHwmReference`)
+- **Separación de Validez Numérica y Procedencia Auténtica**:
+  - El motor de valoración en tiempo real no infiere ni adivina el HWM histórico a partir del balance contable ni de la última equidad registrada (`account.equity`).
+  - Se añade `HistoricalHwmReference` en `types.ts` con tipado cerrado:
+    - `value: number`
+    - `isProvenanceVerified: boolean` (declaración explícita de confianza aportada por el llamador auditado).
+    - `source: 'audit_ledger_reconstruction' | 'daily_snapshot' | 'prop_firm_api' | 'user_attested'`.
+  - **Bloqueo de Auto-Declaraciones**: Si `source === 'user_attested'` o si `isProvenanceVerified` no es explícitamente `true`, el motor asigna `hwmIntegrityStatus: 'UNVERIFIED_HISTORICAL_HWM'`, bloquea la actualización del HWM (`canUpdatePeakEquity = false`) y congela `peakEquityCandidate = undefined`.
+  - **Validación Previa de `initialCapital`**: Comprueba concurrentemente que `account.initialCapital` y `historicalHwm.value` sean números positivos y finitos con `historicalHwm.value >= account.initialCapital`. Si `initialCapital` es inválido (`NaN`, $\le 0$, $\pm\infty$), el HWM queda bloqueado.
+
+#### 2. Cálculo Unificado de `peakEquityCandidate`
+- **Fórmula Matemática Canónica**:
+  $$\text{valuationBase} = \begin{cases} \text{equity} & \text{si } \text{openTrades.length} > 0 \\ \text{ledgerBalance} & \text{si } \text{openTrades.length} === 0 \end{cases}$$
+  Si $\text{valuationBase}$ no es positivo y finito (`!isPositiveFinite(valuationBase)`), la actualización de HWM se bloquea de inmediato.
+  Si la procedencia está verificada (`hwmIntegrityStatus === 'VERIFIED'`), la valoración es completa (`isValuationComplete`) y 100% fiable (`isReliable`):
+  $$\text{peakEquityCandidate} = \text{roundDecimal}(\max(\text{historicalHwm.value}, \text{valuationBase}), 2)$$
+
+#### 3. Validación de Estados de Feed en Runtime y Blindaje de Calculadores
+- **Validación Centralizada en `validateQuotePrices`**: Comprobación runtime contra el conjunto de estados válidos (`'live' | 'stale' | 'offline' | 'manual'`). Si `quote.status` es desconocido, vacío o corrupto, devuelve inmediatamente `status: 'unvaluable'`, `isValuationAvailable: false` y el código de error tipado `errorCode: 'INVALID_MARKET_QUOTE'`.
+- **Estado Explícito `'spike'` en `PositionValuationStatus`**:
+  - Toda cotización con `isSpike: true` recibe estrictamente `status: 'spike'` (nunca `'active'`).
+  - Mantiene `isValuationAvailable: true` (calculable para supervisión del operador), pero en la cuenta activa `hasSpikeQuote: true`, provocando `isReliable: false`, `canUpdatePeakEquity: false`, `peakEquityCandidate: undefined` y conmutación a `mode: 'manual_closed'`.
+- **Compatibilidad con Stale, Manual y Offline**:
+  - `stale` y `manual`: calculables (`isValuationAvailable: true`), pero `isReliable: false`.
+  - `offline`: calculable solo si conserva precios previos válidos en la cotización; si no tiene precios válidos, devuelta como `unvaluable` (nunca inventa precios).
+- **Semántica Canónica de `mode`**:
+  - `'realtime_feed'`: estrictamente concedido cuando existen posiciones abiertas y el 100% de las cotizaciones son LIVE válidas y fiables.
+  - `'manual_closed'`: concedido cuando no hay operaciones abiertas o cuando existe cualquier cotización degradada (`manual`, `stale`, `offline`, `spike` o incompleta).
+
+#### 4. Suite de Pruebas de Aceptación y Verificación
+- **Nuevo Archivo de Pruebas Unitarias**: `src/__tests__/valuation-equity-integrity.test.ts` (43 pruebas deterministas cubriendo todos los escenarios de B1).
+- **Alineación de Prueba Existente**: `src/__tests__/valuation-engine.test.ts` actualizada para inyectar `historicalHwm` con procedencia verificada, reforzando sus expectativas.
+- **Resultados de Verificación**:
+  - Vitest: **390 pruebas pasando al 100%** (29 suites ejecutadas, 0 fallos, 6 tests omitidos condicionalmente de Supabase real).
+  - TypeScript (`npx tsc --noEmit`): 0 errores.
+  - ESLint (`npm run lint`): 0 advertencias, 0 errores.
+  - Next.js Turbopack Production Build (`npm run build`): Compilación exitosa de las 37 páginas estáticas y dinámicas.
+
+---
+
 ## 28. Próximos Pasos (Pendientes de Autorización)
 
-* **Bloque B (H1, H2, H3, H4, H5, H8)**:
-  - H1: Integridad de Equity y High-Water Mark (congelación ante feeds stale/spike y cálculo seguro).
-  - H2: Riesgo dinámico multi-activo (segregación formal de SL original vs vigente en todos los activos).
-  - H3: Daily Loss intradía y persistencia de snapshots.
-  - H4: Supervisión de margen y apalancamiento efectivo.
-  - H5: Conciliación contable de ejecuciones.
-  - H8: Validación de estados de snapshots.
+* **Bloques Restantes del Paso 8.2.1**:
+  - B2 — H2: Riesgo dinámico multi-activo (segregación formal de SL original vs vigente en todos los activos).
+  - B3 — H3: Daily Loss intradía y persistencia de snapshots.
+  - B4 — H4: Supervisión de margen y apalancamiento efectivo.
+  - B5 — H5: Conciliación contable de ejecuciones.
+  - B6 — H8: Validación de estados de snapshots.
 * **Paso 8.3**: Integración reactiva entre adaptadores WebSocket de Binance y motor de valoración en la UI manual.

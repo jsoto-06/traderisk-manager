@@ -12,6 +12,7 @@ export type ValuationErrorCode =
   | 'INOPERABLE_SPOT_SHORT_BORROW_CAPACITY_EXCEEDED'
   | 'INOPERABLE_SPOT_SHORT_BORROW_RATE_UNAVAILABLE'
   | 'NO_MARKET_QUOTE'
+  | 'INVALID_MARKET_QUOTE'
   | 'INVALID_NUMERIC'
   | 'CURRENCY_CONVERSION_UNAVAILABLE'
   | 'UNSUPPORTED_ASSET_CLASS';
@@ -19,10 +20,39 @@ export type ValuationErrorCode =
 /** Position valuation status */
 export type PositionValuationStatus =
   | 'active'
+  | 'manual'
+  | 'spike'
   | 'inoperable'
   | 'stale'
   | 'offline'
   | 'unvaluable';
+
+/** Sources of historical provenance for High-Water Mark verification */
+export type HwmProvenanceSource =
+  | 'audit_ledger_reconstruction'
+  | 'daily_snapshot'
+  | 'prop_firm_api'
+  | 'user_attested';
+
+/**
+ * Historical High-Water Mark (Peak Equity) reference with provenance evidence.
+ * Formally decouples numerical validity from historical source authentication.
+ */
+export interface HistoricalHwmReference {
+  /** Numerical value of the historical peak equity */
+  value: number;
+  /**
+   * Explicit declaration of verified historical provenance by the caller.
+   * Must be true ONLY if the caller has verified the historical audit record.
+   * If false or undefined, the engine treats this value as unverified telemetry.
+   */
+  isProvenanceVerified: boolean;
+  /** Source identifier for audit tracking */
+  source: HwmProvenanceSource;
+}
+
+/** High-Water Mark integrity status */
+export type HwmIntegrityStatus = 'VERIFIED' | 'UNVERIFIED_HISTORICAL_HWM';
 
 /** Detailed real-time valuation snapshot for a single open position */
 export interface FloatingPositionValuation {
@@ -47,6 +77,7 @@ export interface FloatingPositionValuation {
   isSpike?: boolean;
   isStale?: boolean;
   isOffline?: boolean;
+  isManual?: boolean;
 
   /** PnL metrics */
   grossPnL?: number;
@@ -132,6 +163,14 @@ export interface AccountValuationSnapshot {
   canUpdatePeakEquity: boolean;
   /** Suggested candidate value for peak equity if authorized */
   peakEquityCandidate?: number;
+  /** High-Water Mark provenance integrity verification status */
+  hwmIntegrityStatus: HwmIntegrityStatus;
+
+  /** Health markers across open positions */
+  hasManualQuote: boolean;
+  hasStaleQuote: boolean;
+  hasOfflineQuote: boolean;
+  hasSpikeQuote: boolean;
 
   dynamicOpenRisk: DynamicOpenRiskSnapshot;
   dailyLoss: DailyLossSnapshot;

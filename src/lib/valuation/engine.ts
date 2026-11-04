@@ -9,9 +9,12 @@ import type {
   AccountValuationSnapshot,
   ExecutionReconciliation,
   MarginMetricsSnapshot,
+  HistoricalHwmReference,
+  HwmIntegrityStatus,
 } from './types';
 import { roundDecimal } from '../risk-engine/precision';
 import { classifyInstrument, inferFuturesMultiplier } from './catalog';
+import { isPositiveFinite } from './validation';
 import { valueSpotPosition, type SpotValuationInput } from './calculators/spot';
 import { valueUsdmPosition, type UsdmValuationInput } from './calculators/usdm';
 import { valueCoinMPosition, type CoinMValuationInput } from './calculators/coinm';
@@ -68,6 +71,8 @@ export interface ValuationAccountOptions {
   resetHour?: number;
   /** Explicit account leverage for margin calculations */
   leverage?: number;
+  /** Historical High-Water Mark reference with verified provenance */
+  historicalHwm?: HistoricalHwmReference;
 }
 
 export class MultiAssetValuationEngine {
@@ -265,6 +270,7 @@ export class MultiAssetValuationEngine {
     let hasSpikeQuote = false;
     let hasStaleQuote = false;
     let hasOfflineQuote = false;
+    let hasManualQuote = false;
 
     // 1. Value all open trades
     for (const trade of openTrades) {
@@ -285,29 +291,69 @@ export class MultiAssetValuationEngine {
       if (posValuation.isSpike) hasSpikeQuote = true;
       if (posValuation.isStale) hasStaleQuote = true;
       if (posValuation.isOffline) hasOfflineQuote = true;
+      if (posValuation.isManual) hasManualQuote = true;
     }
 
     // 2. Enforce Equity Integrity (Requisito 3.A)
     // An account's valuation is complete ONLY if 100% of open positions could be valued
     const isValuationComplete = unvaluablePositions.length === 0;
 
-    // Reliable only if all quotes are fresh, non-stale, non-offline, and non-spike
-    const isReliable =
-      isValuationComplete && !hasSpikeQuote && !hasStaleQuote && !hasOfflineQuote;
-
-    // Canonical equity: ledger balance + floating PnL of valuable positions
     const ledgerBalance = roundDecimal(account.balance, 2);
     const unrealizedPnL = roundDecimal(totalFloatingPnL, 2);
     const equity = roundDecimal(ledgerBalance + unrealizedPnL, 2);
 
-    // Peak equity invariant: can only update if valuation is complete, reliable, and live
-    const canUpdatePeakEquity = isValuationComplete && isReliable;
-    const peakEquityCandidate = canUpdatePeakEquity ? Math.max(account.equity, equity) : undefined;
+    // Reliable only if all quotes are fresh, non-stale, non-offline, non-manual, and non-spike
+    const hasUnreliableQuote = hasSpikeQuote || hasStaleQuote || hasOfflineQuote || hasManualQuote;
+    const isReliable = openTrades.length > 0
+      ? isValuationComplete && !hasUnreliableQuote && isPositiveFinite(ledgerBalance)
+      : isPositiveFinite(ledgerBalance);
 
-    // 3. Dynamic Open Risk Aggregation
+    // Operational mode: 'realtime_feed' strictly if open trades exist, valuation is complete and 100% reliable
+    const mode: 'manual_closed' | 'realtime_feed' =
+      openTrades.length > 0 && isValuationComplete && isReliable ? 'realtime_feed' : 'manual_closed';
+
+    // 3. High-Water Mark (Peak Equity) Provenance & Authorization
+    const isInitialCapitalValid = isPositiveFinite(account.initialCapital);
+    const hwmRef = options.historicalHwm;
+    const isHwmProvided = hwmRef !== undefined;
+    const isProvenanceVerified =
+      hwmRef?.isProvenanceVerified === true && hwmRef?.source !== 'user_attested';
+    const isHwmValueValid = isHwmProvided && isPositiveFinite(hwmRef.value);
+    const isHwmSufficient =
+      isHwmValueValid && isInitialCapitalValid && hwmRef.value >= account.initialCapital;
+
+    let hwmIntegrityStatus: HwmIntegrityStatus = 'UNVERIFIED_HISTORICAL_HWM';
+    if (isHwmProvided && isProvenanceVerified && isInitialCapitalValid && isHwmValueValid && isHwmSufficient) {
+      hwmIntegrityStatus = 'VERIFIED';
+    } else {
+      hwmIntegrityStatus = 'UNVERIFIED_HISTORICAL_HWM';
+    }
+
+    // Unified valuation base: equity with open trades, ledgerBalance without open trades
+    const valuationBase = openTrades.length > 0 ? equity : ledgerBalance;
+    const isValuationBaseValid = isPositiveFinite(valuationBase);
+
+    let canUpdatePeakEquity = false;
+    let peakEquityCandidate: number | undefined = undefined;
+
+    if (
+      isValuationComplete &&
+      isReliable &&
+      isValuationBaseValid &&
+      hwmIntegrityStatus === 'VERIFIED' &&
+      hwmRef !== undefined
+    ) {
+      canUpdatePeakEquity = true;
+      peakEquityCandidate = roundDecimal(Math.max(hwmRef.value, valuationBase), 2);
+    } else {
+      canUpdatePeakEquity = false;
+      peakEquityCandidate = undefined;
+    }
+
+    // 4. Dynamic Open Risk Aggregation
     const dynamicOpenRisk = aggregateAccountRisk(positions);
 
-    // 4. Closed PnL Today for Prop Firm Daily Loss
+    // 5. Closed PnL Today for Prop Firm Daily Loss
     let closedPnLToday = options.closedPnLToday ?? 0;
     if (options.closedTradesToday && options.closedTradesToday.length > 0) {
       closedPnLToday = roundDecimal(
@@ -316,7 +362,7 @@ export class MultiAssetValuationEngine {
       );
     }
 
-    // 5. Daily Loss Snapshot
+    // 6. Daily Loss Snapshot
     const startOfDayBalance = options.startOfDayBalance ?? ledgerBalance;
     const startOfDayEquity = options.startOfDayEquity ?? ledgerBalance;
     const startOfDayOpenFloating = options.startOfDayOpenFloating ?? 0;
@@ -340,7 +386,7 @@ export class MultiAssetValuationEngine {
     };
     const dailyLoss = calculateDailyLoss(dailyLossInput);
 
-    // 6. Margin Metrics (when verifiable data exists)
+    // 7. Margin Metrics (when verifiable data exists)
     const marginMetrics = this.computeMarginMetrics(account, positions, options.leverage);
 
     return {
@@ -348,12 +394,17 @@ export class MultiAssetValuationEngine {
       ledgerBalance,
       equity,
       unrealizedPnL,
-      mode: openTrades.length > 0 && isValuationComplete ? 'realtime_feed' : 'manual_closed',
+      mode,
       isValuationComplete,
       unvaluablePositions,
       isReliable,
       canUpdatePeakEquity,
       peakEquityCandidate,
+      hwmIntegrityStatus,
+      hasManualQuote,
+      hasStaleQuote,
+      hasOfflineQuote,
+      hasSpikeQuote,
       dynamicOpenRisk,
       dailyLoss,
       marginMetrics,

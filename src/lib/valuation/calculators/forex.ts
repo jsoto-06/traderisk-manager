@@ -4,7 +4,7 @@
 
 import type { Direction } from '../../types';
 import type { MarketPriceQuote } from '../../market-data/types';
-import type { FloatingPositionValuation } from '../types';
+import type { FloatingPositionValuation, PositionValuationStatus } from '../types';
 import { roundDecimal, calcPips } from '../../risk-engine/precision';
 import {
   validateTradeCoreParams,
@@ -125,6 +125,22 @@ export function valueForexPosition(input: ForexValuationInput): FloatingPosition
   const isSpike = quote.isSpike === true;
   const isStale = quote.status === 'stale';
   const isOffline = quote.status === 'offline';
+  const isManual = quote.status === 'manual';
+
+  let status: PositionValuationStatus;
+  if (isOffline) {
+    status = 'offline';
+  } else if (isStale) {
+    status = 'stale';
+  } else if (isSpike) {
+    status = 'spike';
+  } else if (isManual) {
+    status = 'manual';
+  } else if (quote.status === 'live') {
+    status = 'active';
+  } else {
+    status = 'unvaluable';
+  }
 
   // Long exits at Bid, Short exits at Ask
   const exitPrice = direction === 'long' ? quote.bid : quote.ask;
@@ -140,11 +156,12 @@ export function valueForexPosition(input: ForexValuationInput): FloatingPosition
   return {
     ...baseResult,
     exitPrice,
-    status: isOffline ? 'offline' : isStale ? 'stale' : 'active',
+    status,
     isValuationAvailable: true,
     isSpike,
     isStale,
     isOffline,
+    isManual,
     grossPnL: grossAccount,
     estimatedClosingFee: closingCommission,
     estimatedExitCosts,
