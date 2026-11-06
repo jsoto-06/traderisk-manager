@@ -1,0 +1,1034 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TradeRisk Manager — Manual Completo de Usuario</title>
+  <meta name="description" content="Manual de usuario detallado paso a paso para la gestión de riesgo, cálculo de tamaño de posición, supervisión de cuentas de fondeo y analítica cuantitativa en TradeRisk Manager.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-main: #0B0F19;
+      --bg-surface: #111827;
+      --bg-card: #161F30;
+      --bg-card-hover: #1E293B;
+      --border: #1F2937;
+      --border-accent: #374151;
+      --text-main: #F3F4F6;
+      --text-muted: #9CA3AF;
+      --text-dim: #6B7280;
+      --primary: #06B6D4;
+      --primary-glow: rgba(6, 182, 212, 0.15);
+      --success: #10B981;
+      --success-glow: rgba(16, 185, 129, 0.15);
+      --warning: #F59E0B;
+      --warning-glow: rgba(245, 158, 11, 0.15);
+      --danger: #EF4444;
+      --danger-glow: rgba(239, 68, 68, 0.15);
+      --info: #3B82F6;
+      --code-bg: #0F172A;
+      --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html {
+      scroll-behavior: smooth;
+      background-color: var(--bg-main);
+      color: var(--text-main);
+      font-family: var(--font-sans);
+      line-height: 1.65;
+    }
+
+    body {
+      display: flex;
+      min-height: 100vh;
+    }
+
+    /* Sidebar Navigation */
+    aside.sidebar {
+      width: 320px;
+      background: var(--bg-surface);
+      border-right: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow-y: auto;
+      padding: 1.5rem 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+      flex-shrink: 0;
+      z-index: 40;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      text-decoration: none;
+      color: var(--text-main);
+      padding-bottom: 1rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .brand-logo {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, #06B6D4, #3B82F6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 1.1rem;
+      color: #FFF;
+      box-shadow: 0 0 16px var(--primary-glow);
+    }
+
+    .brand-text h1 {
+      font-size: 1rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .brand-text span {
+      font-size: 0.72rem;
+      color: var(--primary);
+      text-transform: uppercase;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+    }
+
+    .search-box input {
+      width: 100%;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.55rem 0.75rem;
+      color: var(--text-main);
+      font-size: 0.825rem;
+      outline: none;
+      transition: all 0.2s;
+    }
+
+    .search-box input:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 2px var(--primary-glow);
+    }
+
+    nav.toc-nav {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+
+    .toc-title {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      font-weight: 700;
+      color: var(--text-dim);
+      letter-spacing: 0.08em;
+      margin-bottom: 0.5rem;
+      padding-left: 0.5rem;
+    }
+
+    .toc-link {
+      display: block;
+      padding: 0.5rem 0.75rem;
+      border-radius: 6px;
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.85rem;
+      font-weight: 500;
+      transition: all 0.15s;
+    }
+
+    .toc-link:hover {
+      background: var(--bg-card);
+      color: var(--primary);
+      transform: translateX(3px);
+    }
+
+    .sidebar-footer {
+      margin-top: auto;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .btn-live {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      background: linear-gradient(135deg, #06B6D4, #0284C7);
+      color: #FFF;
+      padding: 0.55rem 0.85rem;
+      border-radius: 6px;
+      text-decoration: none;
+      font-weight: 600;
+      font-size: 0.8rem;
+      transition: all 0.2s;
+      box-shadow: 0 2px 8px rgba(6, 182, 212, 0.25);
+    }
+
+    .btn-live:hover {
+      opacity: 0.95;
+      transform: translateY(-1px);
+    }
+
+    /* Main Content Area */
+    main.content {
+      flex: 1;
+      max-width: 960px;
+      padding: 3rem 4rem 6rem;
+      margin: 0 auto;
+    }
+
+    /* Header Banner */
+    .hero-banner {
+      margin-bottom: 3.5rem;
+      padding-bottom: 2.5rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .badge-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.25rem 0.75rem;
+      background: var(--primary-glow);
+      border: 1px solid rgba(6, 182, 212, 0.3);
+      color: var(--primary);
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      margin-bottom: 1rem;
+    }
+
+    .hero-banner h1 {
+      font-size: 2.5rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      line-height: 1.2;
+      margin-bottom: 1rem;
+      background: linear-gradient(135deg, #FFFFFF 40%, #9CA3AF);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .hero-banner p.lead {
+      font-size: 1.15rem;
+      color: var(--text-muted);
+      max-width: 780px;
+      line-height: 1.6;
+    }
+
+    .hero-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1.5rem;
+      margin-top: 1.5rem;
+      font-size: 0.825rem;
+      color: var(--text-dim);
+    }
+
+    .hero-meta strong {
+      color: var(--text-main);
+    }
+
+    /* Typography & Sections */
+    section {
+      margin-bottom: 4rem;
+      scroll-margin-top: 2rem;
+    }
+
+    h2 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: #FFF;
+      margin-bottom: 1.25rem;
+      padding-bottom: 0.5rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+    }
+
+    h2 .section-number {
+      color: var(--primary);
+      font-family: var(--font-mono);
+      font-size: 1.2rem;
+      font-weight: 600;
+    }
+
+    h3 {
+      font-size: 1.25rem;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: #F9FAFB;
+      margin: 2rem 0 1rem;
+    }
+
+    h4 {
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--text-main);
+      margin: 1.25rem 0 0.5rem;
+    }
+
+    p {
+      margin-bottom: 1rem;
+      color: var(--text-muted);
+    }
+
+    ul, ol {
+      margin: 0.75rem 0 1.25rem 1.5rem;
+      color: var(--text-muted);
+    }
+
+    li {
+      margin-bottom: 0.4rem;
+    }
+
+    strong {
+      color: var(--text-main);
+    }
+
+    /* Callout Cards */
+    .callout {
+      border-radius: 8px;
+      padding: 1.25rem 1.5rem;
+      margin: 1.5rem 0;
+      border-left: 4px solid;
+      background: var(--bg-card);
+    }
+
+    .callout.info {
+      border-color: var(--info);
+      background: rgba(59, 130, 246, 0.08);
+    }
+
+    .callout.warning {
+      border-color: var(--warning);
+      background: rgba(245, 158, 11, 0.08);
+    }
+
+    .callout.danger {
+      border-color: var(--danger);
+      background: rgba(239, 68, 68, 0.08);
+    }
+
+    .callout.success {
+      border-color: var(--success);
+      background: rgba(16, 185, 129, 0.08);
+    }
+
+    .callout-title {
+      font-weight: 700;
+      font-size: 0.9rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.4rem;
+    }
+
+    .callout.info .callout-title { color: #60A5FA; }
+    .callout.warning .callout-title { color: #FBBF24; }
+    .callout.danger .callout-title { color: #F87171; }
+    .callout.success .callout-title { color: #34D399; }
+
+    /* Steps Cards */
+    .steps-container {
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+      margin: 1.5rem 0;
+    }
+
+    .step-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.25rem 1.5rem;
+      display: flex;
+      gap: 1.25rem;
+      align-items: flex-start;
+      transition: all 0.2s;
+    }
+
+    .step-card:hover {
+      border-color: var(--border-accent);
+      background: var(--bg-card-hover);
+    }
+
+    .step-badge {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      background: var(--primary);
+      color: #0B0F19;
+      font-weight: 800;
+      font-size: 0.95rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .step-content h4 {
+      margin-top: 0;
+      margin-bottom: 0.35rem;
+      color: #FFF;
+      font-size: 1.05rem;
+    }
+
+    .step-content p {
+      margin-bottom: 0;
+      font-size: 0.9rem;
+    }
+
+    /* Grid layout */
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1.25rem;
+      margin: 1.5rem 0;
+    }
+
+    .feature-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.25rem;
+    }
+
+    .feature-card h4 {
+      margin-top: 0;
+      color: var(--primary);
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    /* Code & Formulas */
+    code {
+      font-family: var(--font-mono);
+      background: var(--code-bg);
+      color: #E2E8F0;
+      padding: 0.15rem 0.4rem;
+      border-radius: 4px;
+      font-size: 0.85em;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.25rem;
+      overflow-x: auto;
+      margin: 1.25rem 0;
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      color: #E2E8F0;
+      line-height: 1.5;
+    }
+
+    /* Tables */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.5rem 0;
+      font-size: 0.875rem;
+    }
+
+    th, td {
+      padding: 0.75rem 1rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+
+    th {
+      background: var(--bg-surface);
+      color: #FFF;
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 0.75rem;
+      letter-spacing: 0.05em;
+    }
+
+    tr:hover td {
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    /* Mobile Menu Toggle */
+    .menu-btn {
+      display: none;
+      position: fixed;
+      bottom: 1.5rem;
+      right: 1.5rem;
+      z-index: 50;
+      background: var(--primary);
+      color: #0B0F19;
+      border: none;
+      border-radius: 50%;
+      width: 50px;
+      height: 50px;
+      font-size: 1.25rem;
+      font-weight: 800;
+      box-shadow: 0 4px 14px rgba(6, 182, 212, 0.4);
+      cursor: pointer;
+    }
+
+    @media (max-width: 900px) {
+      aside.sidebar {
+        position: fixed;
+        left: -320px;
+        transition: left 0.3s ease;
+      }
+
+      aside.sidebar.open {
+        left: 0;
+      }
+
+      main.content {
+        padding: 2rem 1.5rem 5rem;
+      }
+
+      .menu-btn {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+    }
+
+    /* Print styles */
+    @media print {
+      aside.sidebar, .menu-btn, .btn-live {
+        display: none !important;
+      }
+      body {
+        background: #FFF !important;
+        color: #000 !important;
+      }
+      main.content {
+        max-width: 100% !important;
+        padding: 0 !important;
+      }
+      .callout, .step-card, .feature-card {
+        border: 1px solid #CCC !important;
+        background: #FFF !important;
+        color: #000 !important;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Navigation Sidebar -->
+  <aside class="sidebar" id="sidebar">
+    <a href="#" class="brand">
+      <div class="brand-logo">TR</div>
+      <div class="brand-text">
+        <h1>TradeRisk Manager</h1>
+        <span>Manual de Usuario</span>
+      </div>
+    </a>
+
+    <div class="search-box">
+      <input type="text" id="searchInput" placeholder="Buscar en el manual (ej. Stop Loss, Prop Firm...)" onkeyup="filterTOC()">
+    </div>
+
+    <nav class="toc-nav" id="tocNav">
+      <div class="toc-title">Contenido</div>
+      <a href="#intro" class="toc-link">1. Filosofía y Supervisión Manual</a>
+      <a href="#quickstart" class="toc-link">2. Primeros Pasos y Configuración</a>
+      <a href="#position-sizing" class="toc-link">3. Calculadora de Posición</a>
+      <a href="#dashboard" class="toc-link">4. Dashboard e Integridad HWM</a>
+      <a href="#prop-firms" class="toc-link">5. Monitor de Prop Firms</a>
+      <a href="#journal" class="toc-link">6. Diario de Trading y Ledger</a>
+      <a href="#analytics" class="toc-link">7. Analítica Cuantitativa</a>
+      <a href="#reports" class="toc-link">8. Reportes (PDF y Excel)</a>
+      <a href="#storage" class="toc-link">9. Privacidad y Almacenamiento</a>
+      <a href="#faq" class="toc-link">10. Preguntas Frecuentes</a>
+      <a href="#glossary" class="toc-link">11. Glosario Cuantitativo</a>
+    </nav>
+
+    <div class="sidebar-footer">
+      <a href="https://traderisk-manager.vercel.app/es" target="_blank" class="btn-live">
+        <span>Abrir Aplicación en Vivo</span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
+      </a>
+      <div>Versión: <strong>1.0.0 (Producción)</strong></div>
+      <div>Desarrollado con rigor institucional</div>
+    </div>
+  </aside>
+
+  <!-- Mobile toggle button -->
+  <button class="menu-btn" onclick="toggleSidebar()" aria-label="Abrir Menú">☰</button>
+
+  <!-- Main Content -->
+  <main class="content">
+
+    <!-- Hero Banner -->
+    <header class="hero-banner">
+      <div class="badge-pill">Documentación Oficial de Usuario</div>
+      <h1>Manual Completo de TradeRisk Manager</h1>
+      <p class="lead">
+        La guía definitiva para la gestión matemática de capital, supervisión estricta de cuentas de fondeo (Prop Firms), dimensionamiento exacto de lotaje y analítica cuantitativa avanzada. Diseñado para que cualquier trader, desde principiante hasta profesional, proteja su capital sistemáticamente.
+      </p>
+      <div class="hero-meta">
+        <div>Propósito: <strong>Supervisión de Riesgo & Trading Disciplinado</strong></div>
+        <div>Modo de Ejecución: <strong>100% Manual y Soberano</strong></div>
+        <div>Plataforma: <strong>Web Progresiva (Next.js 15)</strong></div>
+      </div>
+    </header>
+
+    <!-- Section 1: Filosofía y Supervisión Manual -->
+    <section id="intro">
+      <h2><span class="section-number">01.</span> Filosofía y Supervisión Manual</h2>
+      <p>
+        <strong>TradeRisk Manager (TRM)</strong> no es un bot de trading automatizado, ni un asesor financiero algorítmico, ni un sistema de copy-trading. 
+      </p>
+      <p>
+        Es una <strong>herramienta institucional de supervisión analítica y cálculo de riesgo pasivo</strong> concebida para traders discrecionales y cuantitativos que ejecutan sus órdenes manualmente en sus propios brokers o exchanges (MetaTrader, cTrader, TradingView, Binance, Bybit, Interactive Brokers, Tradovate, etc.).
+      </p>
+
+      <div class="callout warning">
+        <div class="callout-title">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+          Principio Inmutable: Cero Ejecuciones Automáticas
+        </div>
+        <p>
+          TRM nunca solicitará tus claves privadas de trading ni permisos de ejecución (Trade/Withdrawal API keys). Todas las decisiones de apertura, modificación o cierre de órdenes son tomadas y ejecutadas <strong>exclusivamente por el operador humano</strong>. Esta arquitectura garantiza que ningún error de software o fallo de red pueda abrir o liquidar posiciones por sorpresa en tu cuenta.
+        </p>
+      </div>
+
+      <div class="grid-2">
+        <div class="feature-card">
+          <h4>¿Por qué usar TradeRisk Manager?</h4>
+          <ul>
+            <li><strong>Elimina la emoción:</strong> Calcula exactamente cuánto arriesgar antes de apretar el gatillo.</li>
+            <li><strong>Protege tu cuenta de fondeo:</strong> Avisos en tiempo real antes de vulnerar el Daily Drawdown o Max Drawdown.</li>
+            <li><strong>Cálculo exacto multi-activo:</strong> Fórmulas específicas para Forex, Cripto Spot, Cripto Inverso Coin-M, Futuros y Acciones.</li>
+          </ul>
+        </div>
+        <div class="feature-card">
+          <h4>¿Qué problemas resuelve?</h4>
+          <ul>
+            <li>No volverás a calcular mal el lotaje por confusión de pips o valor de contrato.</li>
+            <li>No perderás una prueba de fondeo por no considerar el trailing drawdown intradía.</li>
+            <li>Descubrirás la probabilidad matemática real de ruina de tu estrategia con Monte Carlo.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 2: Primeros Pasos y Configuración -->
+    <section id="quickstart">
+      <h2><span class="section-number">02.</span> Primeros Pasos y Configuración</h2>
+      <p>
+        Accede a la plataforma directamente en tu navegador desde <a href="https://traderisk-manager.vercel.app/es" target="_blank" style="color: var(--primary);">traderisk-manager.vercel.app/es</a>. La aplicación es totalmente adaptable a computadoras de escritorio, tablets y smartphones.
+      </p>
+
+      <div class="steps-container">
+        <div class="step-card">
+          <div class="step-badge">1</div>
+          <div class="step-content">
+            <h4>Selecciona el Modo de Almacenamiento</h4>
+            <p>
+              Por defecto, TRM opera en <strong>Modo Local Seguro</strong>. Todos tus datos (trades, cuentas, configuraciones) se almacenan cifrados en tu propio navegador (`LocalStorage` / `IndexedDB`). Si deseas sincronizar entre varios dispositivos, puedes conectar tu cuenta de Supabase en Ajustes con un solo clic.
+            </p>
+          </div>
+        </div>
+
+        <div class="step-card">
+          <div class="step-badge">2</div>
+          <div class="step-content">
+            <h4>Crea tu Primera Cuenta de Trading</h4>
+            <p>
+              Dirígete a la pestaña <strong>Cuentas</strong> o al selector superior. Configura los parámetros básicos:
+            </p>
+            <ul>
+              <li><strong>Nombre de la cuenta:</strong> Ej. <em>"FTMO 100K Swing"</em> o <em>"Binance Spot Principal"</em>.</li>
+              <li><strong>Divisa Base de la Cuenta:</strong> USD, EUR, GBP, USDT, etc.</li>
+              <li><strong>Balance Inicial:</strong> Ej. $100,000.</li>
+              <li><strong>Tipo de Cuenta:</strong> Selecciona entre <em>Personal</em> o <em>Prop Firm (Cuenta de Fondeo)</em>.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="step-card">
+          <div class="step-badge">3</div>
+          <div class="step-content">
+            <h4>Define tu Política de Riesgo</h4>
+            <p>
+              Establece tu porcentaje de riesgo máximo permitido por operación (recomendado: entre <strong>0.5% y 1.0%</strong> de tu capital) y tu límite de pérdida diaria permitida.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 3: Calculadora de Posición -->
+    <section id="position-sizing">
+      <h2><span class="section-number">03.</span> Calculadora de Tamaño de Posición (Position Sizing)</h2>
+      <p>
+        El error más común en trading es dimensionar la posición "a ojo" o usar un lotaje fijo sin importar la distancia del Stop Loss. La Calculadora de TRM resuelve este problema calculando el tamaño exacto en función del riesgo en dólares o porcentaje de cuenta.
+      </p>
+
+      <h3>Guía Paso a Paso para Calcular tu Tamaño de Operación</h3>
+      <ol>
+        <li>Selecciona el <strong>Tipo de Activo</strong> (Forex, Cripto Spot, Cripto Coin-M, Futuros o Acciones).</li>
+        <li>Indica el <strong>Balance de la Cuenta</strong> y el <strong>Riesgo Deseado</strong> (% o monto fijo en $).</li>
+        <li>Introduce el <strong>Precio de Entrada</strong> y tu nivel de <strong>Stop Loss</strong>.</li>
+        <li>(Opcional) Introduce comisiones estimadas o spread para un cálculo con tolerancia a deslizamiento.</li>
+        <li>Haz clic en <strong>Calcular Posición</strong>. La herramienta te devolverá el tamaño de posición exacto a introducir en tu broker.</li>
+      </ol>
+
+      <h3>Ejemplos Prácticos por Clase de Activo</h3>
+
+      <!-- Tablas y ejemplos de activos -->
+      <div class="callout info">
+        <div class="callout-title">Ejemplo 1: Forex (EUR/USD)</div>
+        <p>
+          <strong>Escenario:</strong> Cuenta en USD con balance de $100,000. Riesgo máximo por operación: <strong>1% ($1,000 USD)</strong>.<br>
+          Entrada: <code>1.08500</code> | Stop Loss: <code>1.08200</code> (Distancia: 30 pips).<br>
+          Valor del pip en lote estándar (100,000 unidades): <strong>$10.00 USD</strong>.<br>
+          Riesgo por lote estándar: 30 pips × $10 = $300 USD.<br>
+          <strong>Resultado:</strong> Tamaño a operar = <strong>3.33 Lotes Estándar</strong> ($1,000 ÷ $300).
+        </p>
+      </div>
+
+      <div class="callout info">
+        <div class="callout-title">Ejemplo 2: Cripto USD-M Lineal (BTC/USDT)</div>
+        <p>
+          <strong>Escenario:</strong> Cuenta en USDT con balance de $50,000. Riesgo deseado: <strong>1.5% ($750 USD)</strong>.<br>
+          Entrada Long: <code>$65,000</code> | Stop Loss: <code>$63,500</code> (Distancia de precio: $1,500 por BTC).<br>
+          <strong>Resultado:</strong> Cantidad = $750 ÷ $1,500 = <strong>0.50 BTC</strong>.<br>
+          <em>(El valor nominal de la orden es 0.50 × $65,000 = $32,500 USD, lo cual representa un apalancamiento efectivo seguro de solo 0.65x).</em>
+        </p>
+      </div>
+
+      <div class="callout warning">
+        <div class="callout-title">Ejemplo 3: Cripto Inverso Coin-M (Margen en Cripto Base)</div>
+        <p>
+          En contratos inversos (como BTCUSD en Binance Coin-M o Bybit Inverso), el margen y el PnL se liquidan en la propia criptomoneda (BTC), no en dólares. Cada contrato suele tener un valor nominal fijo (ej. $100 USD por contrato).<br>
+          TRM aplica la fórmula inversa matemática:<br>
+          <code>PnL (BTC) = Contratos × ValorNominal × (1/PrecioEntrada - 1/PrecioSL)</code><br>
+          La calculadora te indica exactamente cuántos <strong>contratos</strong> debes ingresar para que tu riesgo final en dólares equivalentes coincida exactamente con tu límite.
+        </p>
+      </div>
+
+      <div class="callout info">
+        <div class="callout-title">Ejemplo 4: Futuros de Índices (E-mini S&P 500 - ES vs Micro MES)</div>
+        <p>
+          <strong>Escenario:</strong> Cuenta de $25,000 arriesgando $250 (1%).<br>
+          Entrada: <code>5,800.00</code> | Stop Loss: <code>5,790.00</code> (Distancia: 10 puntos).<br>
+          - En <strong>E-mini (ES)</strong>, cada punto vale $50 USD. Riesgo por contrato = 10 pts × $50 = $500 (supera el límite de $250).<br>
+          - En <strong>Micro E-mini (MES)</strong>, cada punto vale $5 USD. Riesgo por contrato = 10 pts × $5 = $50.<br>
+          <strong>Resultado recomendado por TRM:</strong> Operar <strong>5 contratos Micro (MES)</strong> ($250 ÷ $50).
+        </p>
+      </div>
+    </section>
+
+    <!-- Section 4: Dashboard e Integridad HWM -->
+    <section id="dashboard">
+      <h2><span class="section-number">04.</span> Dashboard y Monitoreo de Riesgo en Vivo</h2>
+      <p>
+        El panel principal consolida la salud financiera de tu cuenta en tiempo real. Para garantizar que los números reflejen la realidad contable exacta, TRM implementa un <strong>motor de valoración auditado (Bloque B1)</strong>.
+      </p>
+
+      <h3>Métricas Clave del Panel</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Métrica</th>
+            <th>Definición</th>
+            <th>Importancia</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Ledger Balance</strong></td>
+            <td>Saldo contable cerrado (sin PnL flotante).</td>
+            <td>Refleja las operaciones ya cerradas y liquidadas.</td>
+          </tr>
+          <tr>
+            <td><strong>Equity (Patrimonio)</strong></td>
+            <td>Balance + PnL no realizado de posiciones abiertas.</td>
+            <td>Tu valor de liquidación real en este preciso instante.</td>
+          </tr>
+          <tr>
+            <td><strong>High-Water Mark (HWM)</strong></td>
+            <td>Pico histórico máximo de patrimonio alcanzado.</td>
+            <td>Referencia inmutable para calcular el Max Drawdown.</td>
+          </tr>
+          <tr>
+            <td><strong>Drawdown Actual</strong></td>
+            <td>Caída porcentual y monetaria desde el HWM.</td>
+            <td>El termómetro directo de la salud de tu capital.</td>
+          </tr>
+          <tr>
+            <td><strong>Estado de Fiabilidad (`isReliable`)</strong></td>
+            <td>Validación matemática de la integridad del feed.</td>
+            <td>Evita registrar HWM falsos ante cotizaciones erróneas.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="callout success">
+        <div class="callout-title">Integridad Financiera Garantizada</div>
+        <p>
+          Si no tienes posiciones abiertas, tu base de valoración es tu <code>Balance</code>. Si tienes operaciones en curso, la base es tu <code>Equity</code>. El sistema exige que la cotización sea completa y positiva para actualizar el récord histórico (HWM), protegiéndote contra falsas alarmas de drawdown.
+        </p>
+      </div>
+    </section>
+
+    <!-- Section 5: Monitor de Prop Firms -->
+    <section id="prop-firms">
+      <h2><span class="section-number">05.</span> Simulador y Monitor de Cuentas Prop Firm</h2>
+      <p>
+        Más del 90% de los traders que suspenden una prueba de fondeo lo hacen por violar inadvertidamente la regla de <strong>Pérdida Diaria Máxima (Daily Drawdown)</strong> o el <strong>Drawdown Trailing</strong>. TRM incluye un módulo especializado de vigilancia para firmas de fondeo (FTMO, FundedNext, The5ers, Apex, etc.).
+      </p>
+
+      <h3>Las Dos Trampas del Trailing Drawdown y Cómo Evitarlas</h3>
+      <div class="grid-2">
+        <div class="feature-card">
+          <h4>1. Daily Drawdown Relativo vs. Fijo</h4>
+          <p>
+            Algunas firmas calculan el límite diario en base al <em>Balance al inicio del día</em>, mientras que otras lo calculan sobre el <em>Equity más alto alcanzado durante el día</em>. TRM te permite elegir la modalidad exacta de tu empresa para que nunca te sorprenda un cierre forzoso.
+          </p>
+        </div>
+        <div class="feature-card">
+          <h4>2. El "Trailing Lock" del Balance</h4>
+          <p>
+            En firmas de futuros (como Apex o Topstep), el drawdown te persigue en tiempo real mientras el trade está abierto. Si una posición sube $2,000 y se devuelve a $0, el trailing subió $2,000 y acabas de consumir gran parte de tu colchón de pérdida. TRM calcula este colchón dinámico instantáneamente.
+          </p>
+        </div>
+      </div>
+
+      <h3>Semáforo de Alertas de Fondeo</h3>
+      <ul>
+        <li><span style="color: var(--success); font-weight: 700;">🟢 VERDE:</span> Has consumido menos del 50% de tu límite de pérdida permitido. Puedes operar con normalidad.</li>
+        <li><span style="color: var(--warning); font-weight: 700;">🟡 AMARILLO (Alerta Preventiva):</span> Has consumido entre el 50% y el 75% del límite diario o total. Se recomienda reducir el tamaño de posición a la mitad.</li>
+        <li><span style="color: var(--danger); font-weight: 700;">🔴 ROJO (Bloqueo de Emergencia):</span> Has alcanzado más del 80% del límite permitido. <strong>¡Detén tu operativa inmediatamente!</strong> No abras más operaciones hasta el reseteo del nuevo día de trading.</li>
+      </ul>
+    </section>
+
+    <!-- Section 6: Diario de Trading y Ledger -->
+    <section id="journal">
+      <h2><span class="section-number">06.</span> Diario de Operaciones (Trading Journal) y Ledger</h2>
+      <p>
+        Los traders rentables no confían en la memoria: auditan cada operación. El diario de TRM no es una simple hoja de cálculo, sino un <strong>ledger inmutable con traza de auditoría</strong>.
+      </p>
+
+      <h3>Cómo Registrar un Trade</h3>
+      <ol>
+        <li>Ve a la pestaña <strong>Diario de Trading</strong> y presiona <strong>Nuevo Trade</strong>.</li>
+        <li>Completa la información obligatoria: <strong>Símbolo</strong> (ej. EURUSD, NQ, BTCUSDT), <strong>Dirección</strong> (Long o Short), <strong>Precio de Entrada</strong> y <strong>Precio de Salida</strong>.</li>
+        <li>Registra los niveles planeados de <strong>Stop Loss</strong> y <strong>Take Profit</strong> originales para que el sistema calcule si cumpliste con tu ratio Riesgo/Beneficio (R:R).</li>
+        <li>Ingresa el monto de <strong>Comisiones y Swap</strong> cobrados por tu broker para que el PnL neto sea 100% exacto.</li>
+        <li>Añade <strong>Etiquetas (Tags)</strong>:
+          <ul>
+            <li><em>Estrategia:</em> Ej. <code>#Breakout</code>, <code>#Pullback</code>, <code>#LiquidityGrab</code>.</li>
+            <li><em>Psicología:</em> Ej. <code>#PlanSeguido</code>, <code>#FOMO</code>, <code>#SalidaPrematura</code>, <code>#RevengeTrading</code>.</li>
+          </ul>
+        </li>
+      </ol>
+
+      <div class="callout info">
+        <div class="callout-title">Trazabilidad de Modificaciones (`Audit Log`)</div>
+        <p>
+          Cualquier edición o eliminación de un trade queda registrada en una bitácora interna con marca de tiempo. Esto te permite evaluar con total honestidad si estás modificando entradas pasadas para maquillar tus estadísticas.
+        </p>
+      </div>
+    </section>
+
+    <!-- Section 7: Analítica Cuantitativa -->
+    <section id="analytics">
+      <h2><span class="section-number">07.</span> Analítica Cuantitativa y Modelos de Riesgo</h2>
+      <p>
+        El módulo de analítica aplica herramientas estadísticas profesionales para diagnosticar la robustez de tu sistema de trading.
+      </p>
+
+      <h3>1. Esperanza Matemática (Expectancy)</h3>
+      <p>
+        Indica cuánto dinero puedes esperar ganar o perder por cada dólar arriesgado en el largo plazo:
+      </p>
+      <pre>Esperanza = (Tasa de Acierto × Ganancia Media) - (Tasa de Fallo × Pérdida Media)</pre>
+      <p>
+        Si tu esperanza matemática es menor o igual a 0, ningún sistema de gestión de capital podrá salvarte: tu sistema tiene desventaja estadística y requiere ajustes técnicos urgentes.
+      </p>
+
+      <h3>2. Ruina del Jugador (Gambler's Ruin)</h3>
+      <p>
+        Calcula la probabilidad matemática exacta de que tu cuenta llegue a cero antes de alcanzar tu objetivo de capital. Muestra cómo arriesgar un 5% por operación en lugar de un 1% multiplica exponencialmente el riesgo de quiebra, incluso con una tasa de acierto del 60%.
+      </p>
+
+      <h3>3. Simulación Monte Carlo (10,000 Iteraciones)</h3>
+      <p>
+        Tu historial de trades pasados es solo una de las miles de secuencias posibles en las que pudieron ocurrir tus ganancias y pérdidas. La simulación Monte Carlo desordena y proyecta tus trades miles de veces para responder a tres preguntas vitales:
+      </p>
+      <ul>
+        <li>¿Cuál es la <strong>peor racha de pérdidas consecutivas</strong> que deberías esperar en los próximos 100 trades?</li>
+        <li>¿Cuál es el <strong>Drawdown Máximo más probable</strong> que atravesará tu cuenta?</li>
+        <li>¿Cuál es la probabilidad de que tu cuenta supere la fase de evaluación de una Prop Firm sin tocar el límite de pérdida?</li>
+      </ul>
+    </section>
+
+    <!-- Section 8: Reportes -->
+    <section id="reports">
+      <h2><span class="section-number">08.</span> Generación de Reportes Ejecutivos (PDF y Excel)</h2>
+      <p>
+        Ya sea para presentar tus resultados ante inversores, archivar tu rendimiento fiscal o revisar tu progreso mensual, TRM te permite generar reportes profesionales en segundos.
+      </p>
+
+      <div class="grid-2">
+        <div class="feature-card">
+          <h4>Exportación en PDF Institucional</h4>
+          <p>
+            Genera un documento formal con carátula, resumen ejecutivo de KPIs (Profit Factor, Sharpe Ratio, Max Drawdown), desglose mensual y gráfico de curva de patrimonio listo para imprimir o enviar.
+          </p>
+        </div>
+        <div class="feature-card">
+          <h4>Exportación CSV / Excel (UTF-8 BOM)</h4>
+          <p>
+            Exporta el historial completo de operaciones a archivo `.csv` formateado con encabezado <strong>UTF-8 BOM</strong>. Esto asegura que al abrirlo directamente en Microsoft Excel en Windows o Mac, todos los acentos, símbolos y columnas numéricas se alineen perfectamente sin caracteres extraños.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 9: Privacidad y Almacenamiento -->
+    <section id="storage">
+      <h2><span class="section-number">09.</span> Privacidad, Resiliencia y Almacenamiento</h2>
+      <p>
+        La seguridad y soberanía de tus datos financieros es nuestra prioridad absoluta.
+      </p>
+
+      <div class="callout success">
+        <div class="callout-title">Tus Datos Son Tuyos</div>
+        <p>
+          En el modo local predeterminado, ningún dato de tus cuentas, balances o trades sale de tu ordenador. Todo permanece en el almacenamiento aislado de tu navegador web.
+        </p>
+      </div>
+
+      <h3>Mecanismo de Cuarentena contra Corrupción de Datos</h3>
+      <p>
+        Si se produce un corte de energía o un error de escritura en el navegador, el motor <code>safeStorage</code> de TRM detecta anomalías de esquema o datos corruptos y los traslada a un <strong>espacio de cuarentena protegido</strong>, evitando que la aplicación se congele o bloquee tu pantalla. Puedes restaurar o purgar los datos aislados desde el panel de Diagnóstico en cualquier momento.
+      </p>
+    </section>
+
+    <!-- Section 10: FAQ -->
+    <section id="faq">
+      <h2><span class="section-number">10.</span> Preguntas Frecuentes (FAQ)</h2>
+      
+      <h4>¿Se borrarán mis datos si cierro o reinicio el navegador?</h4>
+      <p>
+        <strong>No.</strong> Los datos persisten en el almacenamiento local permanente de tu navegador (`LocalStorage`). Sin embargo, si borras el historial o cookies de tu navegador, esos datos locales se eliminarán. Por ello, te recomendamos exportar una copia de seguridad periódica o activar la sincronización en la nube con Supabase.
+      </p>
+
+      <h4>¿Puedo conectar MetaTrader 4 / 5 o TradingView directamente?</h4>
+      <p>
+        TradeRisk Manager está diseñado para supervisión manual, por lo que tú introduces los datos de las operaciones. Esto garantiza 100% de seguridad: nunca arriesgas tus credenciales bancarias ni de broker frente a hackeos o pérdidas de conexión.
+      </p>
+
+      <h4>¿Qué significa la advertencia de "Feed no fiable" en el panel?</h4>
+      <p>
+        Significa que el precio recibido o la información de posiciones abiertas está incompleta, ausente o contiene valores numéricos imposibles (ej. precios negativos o NaN). El sistema inhabilita temporalmente la actualización del High-Water Mark para proteger tu cuenta de registros falsos.
+      </p>
+
+      <h4>¿Funciona la calculadora sin conexión a internet?</h4>
+      <p>
+        <strong>Sí.</strong> La aplicación está empaquetada como una Progressive Web App (PWA). Todos los motores matemáticos de cálculo de lotaje, simulaciones y análisis corren localmente en el motor JavaScript de tu dispositivo.
+      </p>
+    </section>
+
+    <!-- Section 11: Glosario -->
+    <section id="glossary">
+      <h2><span class="section-number">11.</span> Glosario de Términos Cuantitativos</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Término</th>
+            <th>Definición Breve</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>High-Water Mark (HWM)</strong></td>
+            <td>El valor pico más alto que ha alcanzado el capital de tu cuenta en toda su historia.</td>
+          </tr>
+          <tr>
+            <td><strong>Drawdown Máximo (MDD)</strong></td>
+            <td>La mayor caída porcentual o monetaria registrada desde un pico histórico anterior.</td>
+          </tr>
+          <tr>
+            <td><strong>Profit Factor</strong></td>
+            <td>Ganancias brutas totales divididas entre pérdidas brutas totales. Un valor mayor a 1.5 indica una estrategia robusta.</td>
+          </tr>
+          <tr>
+            <td><strong>Sharpe Ratio</strong></td>
+            <td>Medida del rendimiento ajustado al riesgo. Indica cuánto retorno obtienes por cada unidad de volatilidad asumida.</td>
+          </tr>
+          <tr>
+            <td><strong>Pip (Price Interest Point)</strong></td>
+            <td>Unidad estándar de medida de movimiento de precio en Forex (habitualmente el cuarto decimal, 0.0001, salvo pares con JPY donde es 0.01).</td>
+          </tr>
+          <tr>
+            <td><strong>Tick</strong></td>
+            <td>La fluctuación de precio mínima posible en un contrato de futuros o acciones.</td>
+          </tr>
+          <tr>
+            <td><strong>Contrato Inverso (Coin-M)</strong></td>
+            <td>Instrumento derivado cuyo colateral y ganancia/pérdida se liquidan en la moneda base (ej. Bitcoin) en lugar de una stablecoin.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+  </main>
+
+  <script>
+    // Toggle Mobile Sidebar
+    function toggleSidebar() {
+      const sidebar = document.getElementById('sidebar');
+      sidebar.classList.toggle('open');
+    }
+
+    // Filter Table of Contents / Quick search
+    function filterTOC() {
+      const query = document.getElementById('searchInput').value.toLowerCase();
+      const links = document.querySelectorAll('#tocNav .toc-link');
+      links.forEach(link => {
+        const text = link.innerText.toLowerCase();
+        link.style.display = text.includes(query) ? 'block' : 'none';
+      });
+    }
+
+    // Close sidebar on link click (mobile)
+    document.querySelectorAll('.toc-link').forEach(link => {
+      link.addEventListener('click', () => {
+        if (window.innerWidth <= 900) {
+          document.getElementById('sidebar').classList.remove('open');
+        }
+      });
+    });
+  </script>
+</body>
+</html>

@@ -8,6 +8,8 @@
 
 **TradeRisk Manager** es una plataforma institucional y cuantitativa diseñada para la **supervisión en tiempo real, gestión de disciplina de riesgo, contabilidad analítica y auditoría de carteras en trading manual**.
 
+📖 **[Acceder al Manual Completo de Usuario (HTML interactivo)](https://traderisk-manager.vercel.app/manual.html)** | 📄 **[Ver archivo local del manual](./public/manual.html)**
+
 ---
 
 ## ⚠️ Principio Fundamental de Diseño: 0 Automatizaciones Operativas
