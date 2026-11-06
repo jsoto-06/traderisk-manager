@@ -302,11 +302,14 @@ export class MultiAssetValuationEngine {
     const unrealizedPnL = roundDecimal(totalFloatingPnL, 2);
     const equity = roundDecimal(ledgerBalance + unrealizedPnL, 2);
 
-    // Reliable only if all quotes are fresh, non-stale, non-offline, non-manual, and non-spike
+    // Unified valuation base: equity with open trades, ledgerBalance without open trades
+    const valuationBase = openTrades.length > 0 ? equity : ledgerBalance;
+    const isValuationBaseValid = isPositiveFinite(valuationBase);
+
+    // Reliable only if all quotes are fresh, non-stale, non-offline, non-manual, and non-spike,
+    // and the applicable valuationBase is positive and finite
     const hasUnreliableQuote = hasSpikeQuote || hasStaleQuote || hasOfflineQuote || hasManualQuote;
-    const isReliable = openTrades.length > 0
-      ? isValuationComplete && !hasUnreliableQuote && isPositiveFinite(ledgerBalance)
-      : isPositiveFinite(ledgerBalance);
+    const isReliable = isValuationComplete && !hasUnreliableQuote && isPositiveFinite(valuationBase);
 
     // Operational mode: 'realtime_feed' strictly if open trades exist, valuation is complete and 100% reliable
     const mode: 'manual_closed' | 'realtime_feed' =
@@ -328,10 +331,6 @@ export class MultiAssetValuationEngine {
     } else {
       hwmIntegrityStatus = 'UNVERIFIED_HISTORICAL_HWM';
     }
-
-    // Unified valuation base: equity with open trades, ledgerBalance without open trades
-    const valuationBase = openTrades.length > 0 ? equity : ledgerBalance;
-    const isValuationBaseValid = isPositiveFinite(valuationBase);
 
     let canUpdatePeakEquity = false;
     let peakEquityCandidate: number | undefined = undefined;

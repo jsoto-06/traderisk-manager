@@ -637,4 +637,115 @@ describe('Fase 8.2.1 — Bloque B1: Integridad de Equity y High-Water Mark (H1)'
       expect(snapshot.isReliable).toBe(false);
     });
   });
+
+  // ===========================================================================
+  // 10. Regresión: Alineación de isReliable con valuationBase (5 escenarios)
+  // ===========================================================================
+
+  describe('10. Regresión: Alineación de isReliable con valuationBase', () => {
+    const verifiedHwm = {
+      value: 100000,
+      isProvenanceVerified: true,
+      source: 'audit_ledger_reconstruction' as const,
+    };
+
+    it('10.1 posiciones abiertas, equity 105000, ledgerBalance 0: isReliable = true, canUpdatePeakEquity = true, peakEquityCandidate = 105000, mode = realtime_feed', () => {
+      const account = createMockAccount({ balance: 0, initialCapital: 100000 });
+      const trade = createMockTrade({ size: 1.0, entryPrice: 50000 });
+      const quotes = new Map([
+        ['BTC/USDT', createMockQuote({ bid: 155000, ask: 155010, status: 'live' })],
+      ]);
+
+      const snapshot = engine.valueAccount(account, [trade], {
+        quotes,
+        tradeOptions: {
+          [trade.id]: { closingFeeRate: 0 },
+        },
+        historicalHwm: verifiedHwm,
+      });
+
+      expect(snapshot.ledgerBalance).toBe(0);
+      expect(snapshot.equity).toBe(105000);
+      expect(snapshot.isReliable).toBe(true);
+      expect(snapshot.canUpdatePeakEquity).toBe(true);
+      expect(snapshot.peakEquityCandidate).toBe(105000);
+      expect(snapshot.mode).toBe('realtime_feed');
+    });
+
+    it('10.2 posiciones abiertas, equity 105000, ledgerBalance -5000: isReliable = true, canUpdatePeakEquity = true, peakEquityCandidate = 105000, mode = realtime_feed', () => {
+      const account = createMockAccount({ balance: -5000, initialCapital: 100000 });
+      const trade = createMockTrade({ size: 1.0, entryPrice: 50000 });
+      const quotes = new Map([
+        ['BTC/USDT', createMockQuote({ bid: 160000, ask: 160010, status: 'live' })],
+      ]);
+
+      const snapshot = engine.valueAccount(account, [trade], {
+        quotes,
+        tradeOptions: {
+          [trade.id]: { closingFeeRate: 0 },
+        },
+        historicalHwm: verifiedHwm,
+      });
+
+      expect(snapshot.ledgerBalance).toBe(-5000);
+      expect(snapshot.equity).toBe(105000);
+      expect(snapshot.isReliable).toBe(true);
+      expect(snapshot.canUpdatePeakEquity).toBe(true);
+      expect(snapshot.peakEquityCandidate).toBe(105000);
+      expect(snapshot.mode).toBe('realtime_feed');
+    });
+
+    it('10.3 posiciones abiertas, equity 0, ledgerBalance 50000: isReliable = false, canUpdatePeakEquity = false, peakEquityCandidate = undefined, mode = manual_closed', () => {
+      const account = createMockAccount({ balance: 50000, initialCapital: 100000 });
+      const trade = createMockTrade({ size: 1.0, entryPrice: 60000 });
+      const quotes = new Map([
+        ['BTC/USDT', createMockQuote({ bid: 10000, ask: 10010, status: 'live' })],
+      ]);
+
+      const snapshot = engine.valueAccount(account, [trade], {
+        quotes,
+        tradeOptions: {
+          [trade.id]: { closingFeeRate: 0 },
+        },
+        historicalHwm: verifiedHwm,
+      });
+
+      expect(snapshot.ledgerBalance).toBe(50000);
+      expect(snapshot.equity).toBe(0);
+      expect(snapshot.isReliable).toBe(false);
+      expect(snapshot.canUpdatePeakEquity).toBe(false);
+      expect(snapshot.peakEquityCandidate).toBeUndefined();
+      expect(snapshot.mode).toBe('manual_closed');
+    });
+
+    it('10.4 sin posiciones abiertas, ledgerBalance 0: isReliable = false, HWM bloqueado, mode = manual_closed', () => {
+      const account = createMockAccount({ balance: 0, initialCapital: 100000 });
+
+      const snapshot = engine.valueAccount(account, [], {
+        historicalHwm: verifiedHwm,
+      });
+
+      expect(snapshot.ledgerBalance).toBe(0);
+      expect(snapshot.equity).toBe(0);
+      expect(snapshot.isReliable).toBe(false);
+      expect(snapshot.canUpdatePeakEquity).toBe(false);
+      expect(snapshot.peakEquityCandidate).toBeUndefined();
+      expect(snapshot.mode).toBe('manual_closed');
+    });
+
+    it('10.5 sin posiciones abiertas, ledgerBalance 105000: isReliable = true, canUpdatePeakEquity = true, peakEquityCandidate = 105000, mode = manual_closed', () => {
+      const account = createMockAccount({ balance: 105000, initialCapital: 100000 });
+
+      const snapshot = engine.valueAccount(account, [], {
+        historicalHwm: verifiedHwm,
+      });
+
+      expect(snapshot.ledgerBalance).toBe(105000);
+      expect(snapshot.equity).toBe(105000);
+      expect(snapshot.isReliable).toBe(true);
+      expect(snapshot.canUpdatePeakEquity).toBe(true);
+      expect(snapshot.peakEquityCandidate).toBe(105000);
+      expect(snapshot.mode).toBe('manual_closed');
+    });
+  });
 });

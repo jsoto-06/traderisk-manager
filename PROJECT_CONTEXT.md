@@ -1825,10 +1825,11 @@ El **Paso 8.2 (Motor de Valuación Cuantitativa en Tiempo Real)** ha sido implem
   - `'manual_closed'`: concedido cuando no hay operaciones abiertas o cuando existe cualquier cotización degradada (`manual`, `stale`, `offline`, `spike` o incompleta).
 
 #### 4. Suite de Pruebas de Aceptación y Verificación
-- **Nuevo Archivo de Pruebas Unitarias**: `src/__tests__/valuation-equity-integrity.test.ts` (43 pruebas deterministas cubriendo todos los escenarios de B1).
+- **Archivo de Pruebas Unitarias**: `src/__tests__/valuation-equity-integrity.test.ts` (48 pruebas deterministas cubriendo todos los escenarios de B1 y regresión de alineación de `isReliable` con `valuationBase`).
+- **Alineación de `isReliable` con `valuationBase`**: Corrección formal auditada de `isReliable`, que evalúa `isValuationComplete && !hasUnreliableQuote && isPositiveFinite(valuationBase)`, eliminando el acoplamiento indebido a `ledgerBalance > 0` con posiciones abiertas (`equity` solvente) y protegiendo fielmente las cuentas en quiebra (`equity <= 0`) y cerradas (`ledgerBalance > 0`).
 - **Alineación de Prueba Existente**: `src/__tests__/valuation-engine.test.ts` actualizada para inyectar `historicalHwm` con procedencia verificada, reforzando sus expectativas.
 - **Resultados de Verificación**:
-  - Vitest: **390 pruebas pasando al 100%** (29 suites ejecutadas, 0 fallos, 6 tests omitidos condicionalmente de Supabase real).
+  - Vitest: **395 pruebas pasando al 100%** (29 suites ejecutadas, 0 fallos, 6 tests omitidos condicionalmente de Supabase real).
   - TypeScript (`npx tsc --noEmit`): 0 errores.
   - ESLint (`npm run lint`): 0 advertencias, 0 errores.
   - Next.js Turbopack Production Build (`npm run build`): Compilación exitosa de las 37 páginas estáticas y dinámicas.
